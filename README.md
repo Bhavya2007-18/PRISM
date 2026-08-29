@@ -2,74 +2,326 @@
 
 ### Polyglot Real-time Intelligent Support Mediator
 
-> **One conversation. Any language. The right resolution.**
+> *"PRISM doesn't just understand what people say. It understands when it has enough information to act — and when it doesn't."*
 
-PRISM is a real-time, multilingual conversational AI agent designed to act as the first point of contact between people and support systems.
-
-It understands natural, multilingual and code-switched conversations, extracts the information needed to resolve a request, interacts with external tools, maintains conversation context, and intelligently escalates cases to human agents when confidence is too low or human intervention is required.
-
-Built for the **EchoSphere: Agora Conversational AI Hackathon**.
+Built for the **EchoSphere: Agora Conversational AI Hackathon** — Problem Statement PS51: Multilingual Assistance-Line Agent with Human Escalation.
 
 ---
 
-## 🌐 The Problem
+## The Problem
 
-Traditional assistance systems assume that users will:
+Traditional voice support systems fail because they assume users will:
+- Speak a single, consistent language
+- Follow a structured conversation flow
+- Describe their problem clearly
+- Repeat themselves when transferred to a human agent
 
-- Speak a specific language
-- Follow a predefined conversation flow
-- Clearly describe their problem
-- Provide information in the expected format
-- Repeat themselves when transferred to a human
+Real callers speak Hindi. Or English. Or both in the same sentence — Hinglish. They switch mid-sentence. They have background noise. They forget their transaction ID. They describe problems in unexpected ways.
 
-Real conversations don't work like that.
+Most voice bots respond by misunderstanding, looping, or confidently giving the wrong answer.
 
-A caller may switch between Hindi and English, speak with background noise, interrupt the agent, forget important details, or describe a problem in an unexpected way.
-
-Most voice bots respond by either:
-
-> misunderstanding the user, repeatedly asking questions, or confidently giving the wrong answer.
-
-PRISM takes a different approach.
+**PRISM takes a different approach.**
 
 ---
 
-# 💡 Our Approach
+## What PRISM Does
 
-PRISM acts as a **universal conversational layer** between people, AI-powered services, and human agents.
+PRISM is a real-time multilingual conversational AI that:
 
-```text
-                    👤 CALLER
-                       │
-             Any language / accent
-             Natural or messy speech
-                       │
-                       ▼
-              ┌─────────────────┐
-              │      AGORA      │
-              │ Real-Time Voice │
-              └────────┬────────┘
-                       │
-                       ▼
-              ┌─────────────────┐
-              │      PRISM      │
-              │ Conversation AI │
-              └────────┬────────┘
-                       │
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-      Understand     Reason       Remember
-          │            │            │
-          └────────────┼────────────┘
-                       ▼
-                Decision Engine
-                       │
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-       Resolve      Call Tools   Escalate
-          │            │            │
-          ▼            ▼            ▼
-        DONE        Take Action   HUMAN
-                                    │
-                                    ▼
-                              Full Context
+1. **Listens** via Agora's real-time voice infrastructure
+2. **Understands** natural Hindi, English, and Hinglish speech
+3. **Remembers** structured case state across the conversation
+4. **Decides** deterministically what to do next (ask, call a tool, escalate)
+5. **Acts** by calling external services to verify information
+6. **Knows when it doesn't know enough** — and escalates with full context
+
+The differentiator is not multilingual capability. It's the combination of:
+- Structured case state (not just raw chat history)
+- Deterministic decision engine (LLM for language, code for logic)
+- Honest confidence labels (HIGH / LOW / CRITICAL_UNKNOWN)
+- Context-preserving human escalation
+
+---
+
+## Architecture
+
+```
+USER (voice / Hinglish)
+        │
+        ▼
+   ┌─────────────┐
+   │    AGORA    │  ← real-time voice infrastructure
+   │  RTC + STT  │    The AI agent joins as a virtual participant
+   │  + TTS      │    STT and TTS run in Agora's cloud
+   └──────┬──────┘
+          │ POST /llm-proxy (OpenAI format)
+          ▼
+   ┌─────────────────────────────────────────┐
+   │           PRISM BACKEND (FastAPI)        │
+   │                                         │
+   │  /llm-proxy ← intercepts every LLM call │
+   │       │                                 │
+   │  ┌────┴────┐    ┌──────────────────┐    │
+   │  │   LLM   │    │   Case State     │    │
+   │  │(language│    │ (structured,     │    │
+   │  │ entity  │    │  in-memory)      │    │
+   │  │ extract)│    └────────┬─────────┘    │
+   │  └────┬────┘             │              │
+   │       └────────┬─────────┘              │
+   │                ▼                        │
+   │         Decision Engine                 │
+   │         (pure Python,                   │
+   │          no LLM)                        │
+   │                │                        │
+   │    ┌───────────┼──────────┐             │
+   │    ▼           ▼          ▼             │
+   │   ASK        TOOL      ESCALATE         │
+   │               │           │             │
+   └───────────────┼───────────┼─────────────┘
+                   ▼           ▼
+            Mock Transaction  Human Agent
+                  API            Dashboard
+```
+
+### LLM vs Code Boundary
+
+| Concern | Owner |
+|---------|-------|
+| Understanding speech / intent | LLM |
+| Extracting entities (TX ID, amount) | LLM |
+| Natural conversational responses | LLM |
+| Case state fields | **Code** |
+| Confidence labels | **Code** |
+| Escalation conditions | **Code** |
+| Tool call execution | **Code** |
+| Ticket creation | **Code** |
+
+---
+
+## Agora's Role
+
+Agora is the core real-time voice infrastructure of PRISM — not an add-on.
+
+- **Agora RTC** — the caller's microphone and speaker connect through Agora's real-time channel
+- **Agora Conversational AI Engine** — an AI agent joins the channel as a virtual participant, handling ASR (speech-to-text) and TTS (text-to-speech) entirely in Agora's cloud
+- **LLM Proxy** — Agora calls our backend's `/llm-proxy` for every conversation turn, using the OpenAI-compatible chat completions format. This is where PRISM intercepts, injects case context, handles tool calls, and drives the decision engine.
+
+Without Agora, there is no voice. Agora is what makes PRISM a real-time conversational experience rather than a chatbot.
+
+---
+
+## Features
+
+- **Real-time multilingual voice** — Hindi, English, Hinglish, natural code-switching
+- **Structured case state** — every conversation builds a typed case object, not just chat history
+- **Deterministic decision engine** — ASK / TOOL_CALL / ESCALATE logic in pure Python
+- **Honest confidence labels** — HIGH / LOW / CRITICAL_UNKNOWN per field
+- **Tool calling** — mock transaction API with real interception and result injection
+- **Multi-condition escalation** — missing info, contradiction, tool failure, low confidence, user request
+- **Context-preserving handoff** — human agent receives full structured case, not a blank slate
+- **Human agent dashboard** — live polling, confidence breakdown, Take Over button
+
+---
+
+## Confidence Model
+
+PRISM uses label-based confidence, not a probabilistic score:
+
+| Label | Meaning | Display |
+|-------|---------|---------|
+| `HIGH` | Field present AND verified by tool | ~95% |
+| `LOW` | Stated by user, not tool-verified | ~55% |
+| `CRITICAL_UNKNOWN` | Required field missing or unresolvable | ~41% |
+
+The display percentage (shown in the dashboard) is derived from these labels — it's a UI representation, not a calibrated probability. PRISM is honest about this.
+
+---
+
+## Escalation Triggers
+
+PRISM escalates when ANY of these conditions are true:
+
+1. **User explicitly asked** for a human
+2. **Contradictory information** was detected in the conversation
+3. **Tool call failed** — transaction could not be verified
+4. **Critical field is UNKNOWN** after all available verification steps
+5. **Overall confidence score** below the 0.60 threshold
+
+---
+
+## The Demo Flow
+
+The target demo is approximately 2–3 minutes:
+
+| Time | Event |
+|------|-------|
+| 0:00 | User connects to PRISM |
+| 0:10 | User speaks in Hindi: *"Bhai mera payment ka issue hai"* |
+| 0:20 | User switches to Hinglish: *"Paise kat gaye but order confirm nahi hua"* |
+| 0:30 | PRISM understands: intent=payment_issue |
+| 0:40 | PRISM asks: *"Do you have your transaction ID?"* |
+| 0:50 | User gives TX48291 |
+| 1:00 | PRISM calls `check_transaction("TX48291")` |
+| 1:15 | Tool returns: SUCCESS, ₹1,499, NOT_CONFIRMED |
+| 1:30 | PRISM: *"I found your ₹1,499 transaction — payment was successful but the order wasn't confirmed"* |
+| 1:45 | `duplicate_charge = UNKNOWN` — blocking field flagged |
+| 2:00 | Decision engine: ESCALATE |
+| 2:10 | PRISM: *"I'm not confident about whether there was a duplicate charge — I don't want to give you wrong information. Let me connect you with a specialist."* |
+| 2:20 | Human dashboard receives full structured case |
+| 2:30 | Human agent clicks TAKE OVER |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Real-time voice | Agora Conversational AI + RTC |
+| Frontend | React 18 + Vite |
+| Backend | Python 3.11 + FastAPI |
+| LLM | OpenAI-compatible (gpt-4o-mini or any compatible model) |
+| TTS | Microsoft Azure (en-IN-NeerjaNeural) |
+| State | In-memory (no database required) |
+
+---
+
+## Project Structure
+
+```
+prism/
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── VoiceInterface.jsx   ← Agora RTC + mic + agent audio
+│   │   │   ├── EscalationPanel.jsx  ← Case card with Take Over
+│   │   │   └── CasePanel.jsx
+│   │   ├── pages/
+│   │   │   ├── Caller.jsx           ← / route
+│   │   │   └── Agent.jsx            ← /agent route (dashboard)
+│   │   └── App.jsx
+│   └── package.json
+│
+├── backend/
+│   ├── main.py        ← All FastAPI endpoints
+│   ├── agent.py       ← PRISM system prompt
+│   ├── context.py     ← CaseState + in-memory store
+│   ├── confidence.py  ← FieldConfidence labels
+│   ├── decision.py    ← Deterministic decision engine
+│   └── tools.py       ← Tool schemas + mock transaction API
+│
+├── .env.example
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- Agora account (https://console.agora.io) — App ID, Certificate, Customer ID, Customer Secret
+- LLM API key (OpenAI or any OpenAI-compatible provider)
+- Azure Cognitive Services key (for TTS)
+- **ngrok or similar** — Agora needs a public URL to call your `/llm-proxy`
+
+### 1. Clone and configure
+
+```bash
+git clone <repo-url>
+cd prism
+cp .env.example .env
+# Edit .env with your credentials
+```
+
+### 2. Backend
+
+```bash
+cd backend
+pip install -r ../requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+### 3. Expose backend (required for Agora to call /llm-proxy)
+
+```bash
+# In a separate terminal:
+ngrok http 8000
+
+# Copy the https URL (e.g. https://abc123.ngrok.io)
+# Set in .env: BACKEND_PUBLIC_URL=https://abc123.ngrok.io
+# Restart uvicorn after updating .env
+```
+
+### 4. Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+# Opens at http://localhost:5173
+```
+
+### 5. Open two browser windows
+
+- `http://localhost:5173` — Caller (click mic to connect)
+- `http://localhost:5173/agent` — Human Agent Dashboard
+
+---
+
+## Environment Variables
+
+See `.env.example` for all variables. Key ones:
+
+| Variable | Description |
+|----------|-------------|
+| `AGORA_APP_ID` | Your Agora project App ID |
+| `AGORA_APP_CERTIFICATE` | Your Agora App Certificate (for token generation) |
+| `AGORA_CUSTOMER_ID` | Agora RESTful API Customer ID |
+| `AGORA_CUSTOMER_SECRET` | Agora RESTful API Customer Secret |
+| `LLM_API_KEY` | OpenAI or compatible LLM API key |
+| `LLM_BASE_URL` | LLM API base URL (default: https://api.openai.com/v1) |
+| `LLM_MODEL` | Model name (default: gpt-4o-mini) |
+| `AZURE_TTS_KEY` | Azure Cognitive Services key for TTS |
+| `AZURE_TTS_REGION` | Azure region (e.g. eastus) |
+| `BACKEND_PUBLIC_URL` | Public URL Agora uses to call /llm-proxy (use ngrok locally) |
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| GET | `/token?channel=&uid=` | Generate Agora RTC token |
+| POST | `/session/start` | Start Agora AI agent in channel |
+| POST | `/session/stop` | Stop Agora AI agent |
+| POST | `/llm-proxy?channel=` | LLM proxy (called by Agora) |
+| GET | `/mock/transaction/{id}` | Mock transaction lookup |
+| GET | `/cases` | List escalated cases |
+| POST | `/cases/{id}/takeover` | Mark case as taken over |
+| GET | `/debug/case/{channel}` | Dev: inspect case state |
+
+---
+
+## Future Roadmap
+
+- More Indian languages (Tamil, Telugu, Bengali, Marathi)
+- Real payment processor integration
+- Persistent storage (PostgreSQL)
+- WebSocket-based real-time dashboard updates
+- Multi-agent routing
+- Conversation analytics
+- Sentiment analysis
+- CRM integration
+- Enterprise multi-tenant deployment
+
+---
+
+## Hackathon
+
+**Event:** EchoSphere: Agora Conversational AI Hackathon  
+**Problem Statement:** PS51 — Multilingual Assistance-Line Agent with Human Escalation  
+**Team:** PRISM
