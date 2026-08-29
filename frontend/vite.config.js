@@ -6,12 +6,13 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/token': 'http://localhost:8000',
-      '/session': 'http://localhost:8000',
-      '/llm-proxy': 'http://localhost:8000',
-      '/cases': 'http://localhost:8000',
-      '/mock': 'http://localhost:8000',
-      '/health': 'http://localhost:8000',
+      '/token': 'http://localhost:8001',
+      '/session': 'http://localhost:8001',
+      '/llm-proxy': 'http://localhost:8001',
+      '/cases': 'http://localhost:8001',
+      '/mock': 'http://localhost:8001',
+      '/health': 'http://localhost:8001',
+      '/chat': 'http://localhost:8001',
     }
   }
 })

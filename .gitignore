@@ -1,35 +1,140 @@
-# Environment
+# ──────────────────────────────────────────────
+# Environment & secrets (CRITICAL — NEVER COMMIT)
+# ──────────────────────────────────────────────
 .env
-*.env.local
-*.env.production
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.staging
+.env.secret
+secrets/
+certificates/
+keys/
+*.pem
+*.key
+*.p12
+*.pfx
 
-# Python
+# Agora / API / service credentials (safety net)
+AGORA_APP_ID=
+AGORA_APP_CERT=
+OPENAI_API_KEY=
+DEEPSEEK_API_KEY=
+GEMINI_API_KEY=
+
+# ──────────────────────────────────────────────
+# Python / FastAPI backend
+# ──────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyd
 .Python
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments (all common patterns)
 .venv/
 venv/
 env/
-*.egg-info/
+ENV/
+pythonenv/
+.python-version
+
+# Build / packaging
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+*.whl
+
+# ──────────────────────────────────────────────
+# Node.js / Vite / React frontend
+# ──────────────────────────────────────────────
+node_modules/
+.pnp/
+.pnp.js
+.yarn/install-state.gz
+
+# Build output
 dist/
 build/
-
-# Node
-node_modules/
-dist/
+out/
 .vite/
+.rollup.cache/
 
-# IDE
+# Coverage reports
+coverage/
+.nyc_output/
+lcov-report/
+*.lcov
+.coverage*
+
+# NPM / pnpm / yarn lock / logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Local editor overrides
+.eslintcache
+.stylelintcache
+.parcel-cache/
+
+# ──────────────────────────────────────────────
+# Editors & IDEs
+# ──────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
 .vscode/settings.json
 .idea/
+*.iml
+*.iws
+*.ipr
+.project
+.classpath
+.c9/
 *.swp
+*.swo
+*~
+.session/
 
-# OS
+# ──────────────────────────────────────────────
+# Operating system
+# ──────────────────────────────────────────────
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon?
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
 
-# Logs
-*.log
-logs/
+# ──────────────────────────────────────────────
+# Docker / DevOps
+# ──────────────────────────────────────────────
+docker-compose.override.yml
+docker-compose.dev.yml
+.docker-data/
+postgres-data/
+redis-data/
+*.tar
+
+# Temporary files
+tmp/
+temp/
+.cache/
+local/
+scratch/
+scratchpad/
