@@ -28,6 +28,8 @@ export default function VoiceInterface() {
   const [agentActive, setAgentActive] = useState(false)
   const [error, setError] = useState(null)
   const [escalated, setEscalated] = useState(false)
+  const [takenOver, setTakenOver] = useState(false)
+  const [escalatedCaseId, setEscalatedCaseId] = useState(null)
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatSending, setChatSending] = useState(false)
@@ -43,6 +45,30 @@ export default function VoiceInterface() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, mode])
+
+  // Poll /debug/case when escalated (but not yet taken over) to detect agent takeover
+  useEffect(() => {
+    if (!escalated || takenOver || demoMode) return
+    const channel = mode === 'chat' ? TEXT_CHANNEL : CHANNEL
+    let mounted = true
+    const pollTakeover = async () => {
+      try {
+        const res = await fetch(`/debug/case/${channel}`)
+        if (res.ok) {
+          const data = await res.json()
+          if (data.case?.taken_over && mounted) {
+            setTakenOver(true)
+            setMessages(prev => [...prev, {
+              role: 'system',
+              content: 'A human agent has taken over this conversation. You are now connected with a live support specialist.',
+            }])
+          }
+        }
+      } catch {}
+    }
+    const interval = setInterval(pollTakeover, 3000)
+    return () => { mounted = false; clearInterval(interval) }
+  }, [escalated, takenOver, demoMode, mode])
 
   useEffect(() => {
     let animationId
@@ -82,6 +108,8 @@ export default function VoiceInterface() {
       { role: 'assistant', content: 'Namaste! Main PRISM hoon. Aap kaise help kar sakta hoon?' }
     ] : [])
     setEscalated(false)
+    setTakenOver(false)
+    setEscalatedCaseId(null)
 
     try {
       const uid = userUidRef.current
@@ -138,6 +166,8 @@ export default function VoiceInterface() {
     setStatus('idle')
     setAgentActive(false)
     setEscalated(false)
+    setTakenOver(false)
+    setEscalatedCaseId(null)
     setMessages([])
     try {
       if (sessionRef.current?.agent_id) {
@@ -238,11 +268,16 @@ export default function VoiceInterface() {
         const contentType = res.headers.get('content-type') || ''
         if (contentType.includes('application/json')) {
           const data = await res.json()
-          if (typeof data.reply === 'string' && data.reply.trim()) {
-            backendReply = data.reply
+          const replyText = typeof data.reply === 'string' ? data.reply.trim() : ''
+          // Filter out LLM error strings that leaked into response
+          const isErrorReply = /(llm error|api key|openai|groq|authentication|unauthorized|invalid_api_key)/i.test(replyText)
+          if (replyText && !isErrorReply) {
+            backendReply = replyText
             backendEscalate = !!data.escalated
             backendCaseId = data.case_id
             usedBackend = true
+          } else if (replyText) {
+            console.warn('[PRISM] Backend reply contained error text, falling back to demo reply:', replyText.slice(0, 100))
           }
         }
       }
@@ -265,9 +300,10 @@ export default function VoiceInterface() {
       setMessages(prev => [...prev, { role: 'assistant', content: reply }])
 
       if (escalate) {
+        const finalCaseId = caseId || 'PRISM-' + Math.floor(1040 + Math.random() * 50)
         setTimeout(() => {
           setEscalated(true)
-          const finalCaseId = caseId || 'PRISM-' + Math.floor(1040 + Math.random() * 50)
+          setEscalatedCaseId(finalCaseId)
           setMessages(prev => [...prev, {
             role: 'system',
             content: `Case escalated (${finalCaseId}). Tap "Dashboard" for agent view.`,
@@ -756,18 +792,29 @@ export default function VoiceInterface() {
           <div className="slide-up" style={{
             width: '100%',
             padding: '14px 20px',
-            background: 'linear-gradient(135deg, rgba(248,113,113,0.12) 0%, rgba(248,113,113,0.04) 100%)',
-            border: '1px solid rgba(248,113,113,0.3)',
+            background: takenOver
+              ? 'linear-gradient(135deg, rgba(52,211,153,0.12) 0%, rgba(52,211,153,0.04) 100%)'
+              : 'linear-gradient(135deg, rgba(248,113,113,0.12) 0%, rgba(248,113,113,0.04) 100%)',
+            border: takenOver
+              ? '1px solid rgba(52,211,153,0.3)'
+              : '1px solid rgba(248,113,113,0.3)',
             borderRadius: 12,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 14 }}>🔴</span>
-              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--danger)' }}>
-                Human agent connecting...
-              </span>
+              <span style={{ fontSize: 14 }}>{takenOver ? '🟢' : '🔴'}</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: takenOver ? 'var(--success)' : 'var(--danger)' }}>
+                  {takenOver ? 'Human agent connected' : 'Connecting to human agent...'}
+                </div>
+                {escalatedCaseId && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, fontFamily: 'monospace' }}>
+                    Case: {escalatedCaseId}
+                  </div>
+                )}
+              </div>
             </div>
             <a href="/agent" style={{
               fontSize: 12,

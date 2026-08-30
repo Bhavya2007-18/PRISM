@@ -647,117 +647,105 @@ export default function Agent() {
               gap: 18,
               paddingRight: 8,
             }}>
-              {(demoMode ? demoMessages : []).length === 0 && (
-                <div style={{
-                  flex: 1,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '60px 20px',
-                  gap: 12,
-                  color: 'var(--text-muted)',
-                }}>
-                  <div style={{
-                    width: 56, height: 56,
-                    borderRadius: '50%',
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 22,
-                  }}>
-                    🤖
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>
-                    {demoMode ? 'Waiting for conversation to begin...' : 'No live transcript yet'}
-                  </div>
-                  <div style={{ fontSize: 11, textAlign: 'center', maxWidth: 320, lineHeight: 1.6 }}>
-                    {demoMode
-                      ? 'Demo conversation will play automatically in a few seconds.'
-                      : 'Once PRISM transcribes the call, messages will appear here in real time.'}
-                  </div>
-                </div>
-              )}
-
-              {(demoMode ? demoMessages : []).map((msg, i) => (
-                <div key={i} className="fade-in" style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                  alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                  maxWidth: '82%',
-                }}>
-                  {/* Avatar + label */}
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                  }}>
-                    <span style={{
-                      fontSize: msg.role === 'assistant' ? 14 : 16,
-                    }}>
-                      {msg.role === 'user' ? '👤' : '🤖'}
-                    </span>
-                    <span style={{
-                      fontSize: 10,
-                      fontWeight: 700,
-                      letterSpacing: 1.5,
-                      color: msg.role === 'user' ? 'var(--text-muted)' : 'var(--accent-soft)',
-                    }}>
-                      {msg.role === 'user' ? 'USER' : 'PRISM'}
-                    </span>
-                    <span style={{
-                      fontSize: 10,
-                      color: 'var(--text-muted)',
-                    }}>
-                      {msg.time}
-                    </span>
-                  </div>
-
-                  {/* Message bubble */}
-                  <div style={{
-                    padding: '12px 16px',
-                    borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                    background: msg.role === 'user'
-                      ? 'linear-gradient(135deg, rgba(124,111,255,0.18) 0%, rgba(124,111,255,0.06) 100%)'
-                      : 'var(--bg-elevated)',
-                    border: `1px solid ${msg.role === 'user' ? 'var(--border-accent)' : 'var(--border)'}`,
-                  }}>
-                    <p style={{
-                      margin: 0,
-                      fontSize: 14,
-                      lineHeight: 1.65,
-                      color: 'var(--text-primary)',
-                      fontWeight: msg.role === 'assistant' ? 500 : 400,
-                    }}>
-                      {msg.content}
-                    </p>
-                    {msg.thinking && (
+              {/* Compute messages to display: demo mode uses animated messages, live mode uses case history */}
+              {(() => {
+                const liveHistory = (!demoMode && activeCase?.conversation_history) ? activeCase.conversation_history : []
+                const displayMessages = demoMode ? demoMessages : liveHistory
+                return (
+                  <>
+                    {displayMessages.length === 0 && (
                       <div style={{
-                        marginTop: 8,
-                        paddingTop: 8,
-                        borderTop: '1px solid var(--border)',
+                        flex: 1,
                         display: 'flex',
+                        flexDirection: 'column',
                         alignItems: 'center',
-                        gap: 6,
+                        justifyContent: 'center',
+                        padding: '60px 20px',
+                        gap: 12,
+                        color: 'var(--text-muted)',
                       }}>
-                        <span style={{ fontSize: 11 }}>🔧</span>
-                        <span style={{
-                          fontSize: 11,
-                          color: 'var(--accent-soft)',
-                          fontWeight: 500,
-                          fontStyle: 'italic',
+                        <div style={{
+                          width: 56, height: 56,
+                          borderRadius: '50%',
+                          background: 'var(--bg-elevated)',
+                          border: '1px solid var(--border)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 22,
                         }}>
-                          Checking transaction...
-                        </span>
+                          🤖
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>
+                          {demoMode ? 'Waiting for conversation to begin...' : 'No live transcript yet'}
+                        </div>
+                        <div style={{ fontSize: 11, textAlign: 'center', maxWidth: 320, lineHeight: 1.6 }}>
+                          {demoMode
+                            ? 'Demo conversation will play automatically in a few seconds.'
+                            : 'Once PRISM transcribes the call, messages will appear here in real time.'}
+                        </div>
                       </div>
                     )}
-                  </div>
-                </div>
-              ))}
+                    {displayMessages.map((msg, i) => (
+                      <div key={i} className="fade-in" style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                        alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                        maxWidth: '82%',
+                      }}>
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                        }}>
+                          <span style={{ fontSize: msg.role === 'assistant' ? 14 : 16 }}>
+                            {msg.role === 'user' ? '👤' : '🤖'}
+                          </span>
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
+                            color: msg.role === 'user' ? 'var(--text-muted)' : 'var(--accent-soft)',
+                          }}>
+                            {msg.role === 'user' ? 'USER' : 'PRISM'}
+                          </span>
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                            {msg.time || (msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '')}
+                          </span>
+                        </div>
+                        <div style={{
+                          padding: '12px 16px',
+                          borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                          background: msg.role === 'user'
+                            ? 'linear-gradient(135deg, rgba(124,111,255,0.18) 0%, rgba(124,111,255,0.06) 100%)'
+                            : 'var(--bg-elevated)',
+                          border: `1px solid ${msg.role === 'user' ? 'var(--border-accent)' : 'var(--border)'}`,
+                        }}>
+                          <p style={{
+                            margin: 0, fontSize: 14, lineHeight: 1.65,
+                            color: 'var(--text-primary)',
+                            fontWeight: msg.role === 'assistant' ? 500 : 400,
+                          }}>
+                            {msg.content}
+                          </p>
+                          {msg.thinking && (
+                            <div style={{
+                              marginTop: 8, paddingTop: 8,
+                              borderTop: '1px solid var(--border)',
+                              display: 'flex', alignItems: 'center', gap: 6,
+                            }}>
+                              <span style={{ fontSize: 11 }}>🔧</span>
+                              <span style={{ fontSize: 11, color: 'var(--accent-soft)', fontWeight: 500, fontStyle: 'italic' }}>
+                                Checking transaction...
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )
+              })()}
 
               {/* Tool action card */}
               {showToolAction && (
@@ -767,8 +755,8 @@ export default function Agent() {
               )}
             </div>
 
-            {/* Escalation panel inline */}
-            {showEscalation && activeCase && (
+            {/* Escalation panel inline — show in demo mode based on animation, or in live mode if case is escalated */}
+            {(showEscalation || (!demoMode && activeCase?.escalated && !activeCase?.taken_over)) && activeCase && (
               <div className="slide-up" style={{
                 paddingTop: 8,
                 borderTop: '1px solid var(--border)',
@@ -776,7 +764,10 @@ export default function Agent() {
                 <EscalationPanel
                   caseData={activeCase}
                   compact
-                  onTakeOver={(id) => {
+                  onTakeOver={async (id) => {
+                    try {
+                      await fetch(`/cases/${id}/takeover`, { method: 'POST' })
+                    } catch {}
                     setCases(prev => prev.map(p =>
                       p.case_id === id ? { ...p, taken_over: true, status: 'TAKEN_OVER' } : p
                     ))

@@ -15,8 +15,8 @@ class CaseState:
     transaction_id: Optional[str] = None
     amount: Optional[float] = None
     payment_status: Optional[str] = None      # "SUCCESS" / "FAILED"
-    order_status: Optional[str] = None        # "CONFIRMED" / "NOT_CONFIRMED"
-    duplicate_charge: str = "UNKNOWN"         # "YES" / "NO" / "UNKNOWN"
+    order_status: Optional[str] = None      # "CONFIRMED" / "NOT_CONFIRMED"
+    duplicate_charge: str = "UNKNOWN"       # "YES" / "NO" / "UNKNOWN"
     language: list = field(default_factory=list)
     has_contradiction: bool = False
     tool_failed: bool = False
@@ -29,6 +29,7 @@ class CaseState:
     unverified: list = field(default_factory=list)
     conversation_history: list = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_user_text: Optional[str] = None
 
     def to_prompt_summary(self) -> str:
         known = []

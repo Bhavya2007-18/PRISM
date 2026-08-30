@@ -78,57 +78,117 @@ def check_transaction(transaction_id: str) -> dict:
 
 
 def create_escalation_ticket(case: "CaseState", reason: str) -> dict:
-    """Create a support ticket for human agent escalation."""
+    """Create a support ticket for human agent escalation.
+
+    Returned keys are **fixed and guaranteed** — the same shape regardless
+    of intent/state. Used by the frontend Agent dashboard.
+    """
     from confidence import get_confidence_report
     report = get_confidence_report(case)
 
-    ticket_id = case.case_id  # reuse the PRISM-XXXX id
+    ticket_id = case.case_id
+    intent = case.intent or "general_issue"
+    issue = _describe_issue(case)
+    issue_summary = _generate_summary(case)
 
-    summary = {
+    language = case.language or ["English"]
+    if not isinstance(language, list):
+        language = [str(language)]
+    language = [lang for lang in language if lang] or ["English"]
+
+    verified_list = list(case.verified) if isinstance(case.verified, list) else []
+    unverified_list = list(case.unverified) if isinstance(case.unverified, list) else []
+    if case.duplicate_charge == "UNKNOWN" and "duplicate_charge" not in unverified_list:
+        unverified_list.append("duplicate_charge")
+
+    # Honest display values — None → None in the JSON, never "Unknown" strings
+    # that would silently make the UI confidently wrong.
+    ticket = {
+        # ── Identity ─────────────────────────────────────────────────
         "ticket_id": ticket_id,
         "case_id": ticket_id,
         "created_at": datetime.utcnow().isoformat(),
         "status": "ESCALATED",
-        "issue": _describe_issue(case),
-        "language": case.language or ["Unknown"],
+        "taken_over": False,
+        # ── Semantic (for cards / intel) ─────────────────────────────
+        "intent": intent,
+        "issue": issue,
+        "issue_summary": issue_summary,
+        "reason_for_escalation": reason,
+        "language": language,
+        # ── Concrete / verified fields ───────────────────────────────
         "transaction_id": case.transaction_id,
         "amount": case.amount,
         "payment_status": case.payment_status,
         "order_status": case.order_status,
         "duplicate_charge": case.duplicate_charge,
-        "verified": case.verified,
-        "unverified": case.unverified + (["duplicate_charge"] if case.duplicate_charge == "UNKNOWN" else []),
+        # ── Confidence ───────────────────────────────────────────────
         "confidence_fields": {k: v.value for k, v in report.fields.items()},
         "confidence_display": report.display_score,
         "confidence_label": report.overall_label,
-        "reason_for_escalation": reason,
-        "summary": _generate_summary(case),
+        # ── Lists ────────────────────────────────────────────────────
+        "verified": verified_list,
+        "unverified": unverified_list,
+        # ── For the dashboard summary card ───────────────────────────
+        "summary": issue_summary,
+        # ── Conversation (useful for "take over" context) ────────────
+        "conversation_history": case.conversation_history,
     }
 
-    return summary
+    return ticket
 
 
 def _describe_issue(case: "CaseState") -> str:
-    if case.intent == "payment_issue":
+    intent = case.intent or "general_issue"
+    if intent == "payment_issue":
         if case.payment_status == "SUCCESS" and case.order_status == "NOT_CONFIRMED":
             return "Payment deducted but order not confirmed"
-        elif case.payment_status == "FAILED":
+        if case.payment_status == "SUCCESS" and case.duplicate_charge == "UNKNOWN":
+            return "Payment succeeded — possible duplicate charge"
+        if case.payment_status == "FAILED":
             return "Payment failed"
-    return case.intent or "Unknown issue"
+        if case.payment_status == "SUCCESS" and case.order_status in (None, "UNKNOWN"):
+            return "Payment deducted, order status unclear"
+        return "Payment issue"
+    if intent == "refund_request":
+        return "Customer requesting a refund"
+    if intent == "delivery_issue":
+        return "Delivery delay or non-delivery"
+    if intent == "general_issue":
+        return "Customer required general support"
+    return intent.replace("_", " ").strip().title()
 
 
 def _generate_summary(case: "CaseState") -> str:
     parts = []
-    if case.intent == "payment_issue":
+    intent = case.intent or "general_issue"
+    if intent == "payment_issue":
         parts.append("Customer reports a payment issue.")
+    elif intent == "refund_request":
+        parts.append("Customer is requesting a refund.")
+    elif intent == "delivery_issue":
+        parts.append("Customer reports a delivery issue.")
+    else:
+        parts.append("Customer raised a general support issue.")
+
     if case.transaction_id:
-        parts.append(f"Transaction {case.transaction_id}")
-        if case.amount:
-            parts.append(f"of \u20b9{int(case.amount)}")
+        bits = [f"Transaction {case.transaction_id}"]
+        if case.amount is not None:
+            try:
+                bits.append(f"of \u20b9{int(float(case.amount))}")
+            except (TypeError, ValueError):
+                pass
         if case.payment_status:
-            parts.append(f"shows status: {case.payment_status}.")
+            bits.append(f"→ status: {case.payment_status}.")
+        parts.append(" ".join(bits))
     if case.order_status == "NOT_CONFIRMED":
         parts.append("Order has not been confirmed.")
+    elif case.order_status:
+        parts.append(f"Order status: {case.order_status}.")
     if case.duplicate_charge == "UNKNOWN":
-        parts.append("Duplicate charge status could not be determined.")
-    return " ".join(parts) if parts else "Payment support case requiring human review."
+        parts.append("Duplicate charge status could not be determined with confidence.")
+    elif case.duplicate_charge == "YES":
+        parts.append("System indicates a possible duplicate charge.")
+
+    summary = " ".join(p for p in parts if p)
+    return summary or "Customer support case requiring human review."
