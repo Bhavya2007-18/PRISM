@@ -889,7 +889,13 @@ export default function Agent() {
                         </div>
                       </div>
                     )}
-                    {displayMessages.map((msg, i) => (
+                    {displayMessages.filter(msg =>
+                      msg.content &&
+                      typeof msg.content === 'string' &&
+                      msg.content.trim().length > 0 &&
+                      msg.role !== 'tool' &&
+                      msg.role !== 'system'
+                    ).map((msg, i) => (
                       <div key={i} className="fade-in" style={{
                         display: 'flex',
                         flexDirection: 'column',
@@ -929,7 +935,7 @@ export default function Agent() {
                             color: 'var(--text-primary)',
                             fontWeight: msg.role === 'assistant' ? 500 : 400,
                           }}>
-                            {msg.content}
+                            {msg.content || ''}
                           </p>
                           {msg.thinking && (
                             <div style={{

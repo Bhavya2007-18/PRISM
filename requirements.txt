@@ -4,3 +4,9 @@ httpx>=0.27.0
 python-dotenv>=1.0.1
 agora-token-builder
 pydantic>=2.7.1
+litellm>=1.40.0
+silero-vad>=5.1.2
+torch>=2.0.0
+numpy>=1.24.0
+faster-whisper>=1.0.0
+websockets>=12.0

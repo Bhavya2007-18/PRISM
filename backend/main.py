@@ -10,7 +10,7 @@ import time
 import uuid
 import asyncio
 
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -161,7 +161,11 @@ async def start_session(req: SessionStartRequest):
     llm_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     # Ensure case state exists for this channel
-    from context import get_or_create_case
+    from context import get_or_create_case, cases as _cases
+    # If previous session was escalated or taken over, start fresh
+    existing = _cases.get(req.channel)
+    if existing and (existing.escalated or existing.taken_over):
+        del _cases[req.channel]
     case = get_or_create_case(req.channel)
     case.agora_channel = req.channel
     case.voice_mode = "agora_rtc"
@@ -739,6 +743,8 @@ def _extract_and_strip(content: str) -> tuple[str, dict | None]:
         except json.JSONDecodeError:
             pass
         content = re.sub(pattern, '', content, flags=re.DOTALL).strip()
+    # Also strip any residual XML-like tags the model might add
+    content = re.sub(r'<[A-Z_]+>.*?</[A-Z_]+>', '', content, flags=re.DOTALL).strip()
     return content, extracted
 
 
@@ -1004,6 +1010,10 @@ async def chat(req: ChatRequest):
             if action_after == Action.ESCALATE and not case.escalated:
                 _trigger_escalation(case, reason_after)
 
+            # Guard: if LLM returned only the EXTRACT block, use deterministic reply
+            if not clean_content or not clean_content.strip():
+                clean_content, _, _, _, _ = _run_deterministic_path(case)
+
             case.conversation_history.append({"role": "assistant", "content": clean_content})
             _ts = "completed" if (tool_result and tool_result.get("success")) else ("failed" if case.tool_failed else "completed")
             return {
@@ -1028,6 +1038,10 @@ async def chat(req: ChatRequest):
 
         if action_final == Action.ESCALATE and not case.escalated:
             _trigger_escalation(case, reason_final)
+
+        # Guard: if LLM returned only the EXTRACT block, use deterministic reply
+        if not clean_content or not clean_content.strip():
+            clean_content, _, _, _, _ = _run_deterministic_path(case)
 
         case.conversation_history.append({"role": "assistant", "content": clean_content})
 
@@ -1209,6 +1223,101 @@ async def get_channel_state(channel: str):
         "escalated": case.escalated,
         "taken_over": case.taken_over,
     }
+
+
+# ── /ws/vad — Silero VAD WebSocket ───────────────────────────────────
+
+@app.websocket("/ws/vad")
+async def vad_websocket(websocket: WebSocket):
+    """
+    WebSocket for real-time Voice Activity Detection.
+    Client sends: raw 16kHz 16-bit PCM audio bytes
+    Server sends: {"event": "speech_start"} / {"event": "speech_end"} / {"event": "vad_ready"}
+    Frontend uses this to stop TTS when user starts speaking (barge-in).
+    """
+    await websocket.accept()
+    try:
+        from vad_service import get_vad_model, VADProcessor
+        model = get_vad_model()
+        if model is None:
+            await websocket.send_text(json.dumps({"event": "error", "message": "VAD model unavailable — pip install silero-vad torch"}))
+            await websocket.close()
+            return
+        processor = VADProcessor(model)
+        await websocket.send_text(json.dumps({"event": "vad_ready"}))
+        while True:
+            data = await websocket.receive_bytes()
+            for event in processor.process_chunk(data):
+                await websocket.send_text(json.dumps(event))
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_text(json.dumps({"event": "error", "message": str(e)}))
+        except Exception:
+            pass
+
+
+# ── /asr — Faster Whisper speech-to-text ─────────────────────────────
+
+@app.post("/asr")
+async def transcribe(
+    audio: UploadFile = File(...),
+    language: Optional[str] = Form(default=None),
+):
+    """
+    Transcribe audio to text using Faster Whisper.
+    Supports Hindi, English, Hinglish (auto-detected).
+    
+    Form: audio (webm/wav/mp3), language (optional: 'hi', 'en', 'hi-IN')
+    Returns: {text, language, confidence, error}
+    """
+    from asr_service import transcribe_audio
+
+    audio_bytes = await audio.read()
+    content_type = audio.content_type or ""
+    filename = audio.filename or "audio.webm"
+
+    if "webm" in content_type or filename.endswith(".webm"):
+        fmt = "webm"
+    elif "wav" in content_type or filename.endswith(".wav"):
+        fmt = "wav"
+    elif "mp3" in content_type or filename.endswith(".mp3"):
+        fmt = "mp3"
+    elif "ogg" in content_type or filename.endswith(".ogg"):
+        fmt = "ogg"
+    else:
+        fmt = "webm"
+
+    result = transcribe_audio(audio_bytes, language=language, audio_format=fmt)
+    print(f"[PRISM ASR] '{result.get('text','')[:80]}' [{result.get('language')} {result.get('confidence',0):.0%}]")
+    return result
+
+
+@app.get("/asr/status")
+async def asr_status():
+    """Check if Faster Whisper ASR is loaded and ready."""
+    from asr_service import get_whisper_model
+    model, error = get_whisper_model()
+    return {
+        "available": model is not None,
+        "model_size": os.getenv("WHISPER_MODEL_SIZE", "medium"),
+        "error": error,
+    }
+
+
+# ── /session/reset/{channel} — start fresh ───────────────────────────
+
+@app.post("/session/reset/{channel}")
+async def reset_session(channel: str):
+    """Clear case state for a channel so the next message starts a fresh conversation."""
+    from context import cases, escalated_cases
+    if channel in cases:
+        old_case_id = cases[channel].case_id
+        del cases[channel]
+        print(f"[PRISM] 🔄 Session reset for channel: {channel}")
+        return {"status": "reset", "channel": channel, "old_case_id": old_case_id}
+    return {"status": "no_case", "channel": channel}
 
 
 if __name__ == "__main__":

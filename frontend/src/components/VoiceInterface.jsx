@@ -43,6 +43,10 @@ export default function VoiceInterface() {
   const [voiceState, setVoiceState] = useState('IDLE')
   const [aiState, setAiState] = useState(null)
   const [turnId, setTurnId] = useState(null)
+  const [micRecording, setMicRecording] = useState(false)
+  const [asrTranscript, setAsrTranscript] = useState('')
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef = useRef([])
 
   const [selectedLanguage, setSelectedLanguage] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -337,7 +341,10 @@ export default function VoiceInterface() {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[PRISM] Chat fetch error:', e.message)
+      setVoiceState('LISTENING')
+    }
 
     let reply
     let escalate
@@ -388,6 +395,53 @@ export default function VoiceInterface() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendChatMessage()
+    }
+  }
+
+  // ── Mic-to-text via Faster Whisper ASR ─────────────────────────────
+  async function startMicRecording() {
+    if (micRecording) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+      audioChunksRef.current = []
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        await sendToASR(blob)
+      }
+      recorder.start()
+      mediaRecorderRef.current = recorder
+      setMicRecording(true)
+      setAsrTranscript('')
+    } catch (e) {
+      console.warn('[PRISM ASR] Mic access error:', e.message)
+    }
+  }
+
+  function stopMicRecording() {
+    if (!micRecording || !mediaRecorderRef.current) return
+    mediaRecorderRef.current.stop()
+    mediaRecorderRef.current = null
+    setMicRecording(false)
+  }
+
+  async function sendToASR(audioBlob) {
+    try {
+      const formData = new FormData()
+      formData.append('audio', audioBlob, 'recording.webm')
+      formData.append('language', selectedLanguage === 'hi' ? 'hi' : 'en')
+      const res = await fetch(getApiUrl('/asr'), { method: 'POST', body: formData })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.text && !data.error) {
+          setChatInput(prev => (prev ? prev + ' ' + data.text : data.text).trim())
+          setAsrTranscript(data.text)
+        }
+      }
+    } catch (e) {
+      console.warn('[PRISM ASR] Error:', e.message)
     }
   }
 
@@ -974,6 +1028,24 @@ export default function VoiceInterface() {
             gap: 8,
             alignItems: 'flex-end',
           }}>
+            <button
+              onMouseDown={startMicRecording}
+              onMouseUp={stopMicRecording}
+              onTouchStart={startMicRecording}
+              onTouchEnd={stopMicRecording}
+              title="Hold to speak — transcribes Hindi/English to text"
+              style={{
+                width: 44, height: 44, borderRadius: 12, flexShrink: 0,
+                border: `1px solid ${micRecording ? 'rgba(248,113,113,0.5)' : 'var(--border)'}`,
+                background: micRecording ? 'rgba(248,113,113,0.15)' : 'var(--bg-card)',
+                color: micRecording ? 'var(--danger)' : 'var(--text-secondary)',
+                fontSize: 18, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              {micRecording ? '🔴' : '🎤'}
+            </button>
             <textarea
               value={chatInput}
               onChange={e => setChatInput(e.target.value)}
