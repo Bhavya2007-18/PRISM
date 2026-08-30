@@ -185,7 +185,7 @@ export default function Agent() {
   const resolvedCases = displayCases.filter(c => c.taken_over)
   const liveCases = displayCases.filter(c => !c.taken_over)
 
-  const activeNav = 'cases'
+  const [activeNav, setActiveNav] = useState('cases')
 
   const statusColor = (c) => {
     if (c.taken_over) return 'var(--text-muted)'
@@ -280,7 +280,7 @@ export default function Agent() {
             {NAV_ITEMS.map(item => (
               <button
                 key={item.id}
-                onClick={() => {}}
+                onClick={() => setActiveNav(item.id)}
                 style={{
                   padding: '10px 12px',
                   background: activeNav === item.id ? 'rgba(124,111,255,0.1)' : 'transparent',
@@ -466,8 +466,123 @@ export default function Agent() {
           </div>
         </div>
 
-        {/* ──── 3-COLUMN LAYOUT ──── */}
-        <div style={{
+        {/* ──── OVERVIEW PAGE ──── */}
+        {activeNav === 'overview' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+              {[
+                { label: 'Total Cases Today', value: displayCases.length, icon: '📋', color: 'var(--accent)' },
+                { label: 'Escalated', value: activeCases.length, icon: '🔴', color: 'var(--danger)' },
+                { label: 'Resolved', value: resolvedCases.length, icon: '✅', color: 'var(--success)' },
+                { label: 'Avg Confidence', value: `${Math.round(displayCases.reduce((a, c) => a + (c.confidence_display || 0), 0) / (displayCases.length || 1))}%`, icon: '📊', color: 'var(--warning)' },
+              ].map(stat => (
+                <div key={stat.label} className="glass-panel" style={{ padding: '20px 24px' }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>{stat.icon}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: stat.color, lineHeight: 1 }}>{stat.value}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, letterSpacing: 0.5 }}>{stat.label.toUpperCase()}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+              <div className="glass-panel" style={{ padding: '20px 24px' }}>
+                <div className="label-text" style={{ marginBottom: 16 }}>System Health</div>
+                {SYSTEM_STATUSES.map(s => (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                    <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{s.label}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span className="status-dot status-dot--connected" />
+                      <span style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>ONLINE</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="glass-panel" style={{ padding: '20px 24px' }}>
+                <div className="label-text" style={{ marginBottom: 16 }}>Recent Activity</div>
+                {displayCases.slice(0, 5).map(c => (
+                  <div key={c.case_id}
+                    onClick={() => { setActiveNav('cases'); setActiveCaseId(c.case_id) }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
+                    onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
+                    onMouseLeave={e => e.currentTarget.style.opacity = '1'}>
+                    <span style={{ fontSize: 14 }}>{c.taken_over ? '🟢' : c.escalated ? '🔴' : '🟡'}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.issue_summary || c.issue || c.intent}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{c.case_id}</div>
+                    </div>
+                    {typeof c.confidence_display === 'number' && (
+                      <span style={{ fontSize: 11, fontWeight: 700, color: c.confidence_display >= 60 ? 'var(--success)' : 'var(--danger)', fontFamily: 'monospace' }}>{c.confidence_display}%</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ──── HISTORY PAGE ──── */}
+        {activeNav === 'history' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>Case History</h2>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', padding: '3px 10px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 20 }}>{displayCases.length} total</span>
+            </div>
+            <div className="glass-panel" style={{ padding: 0, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+                    {['Case ID', 'Issue', 'Intent', 'Amount', 'Status', 'Confidence', 'Language', 'Time'].map(h => (
+                      <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 10, fontWeight: 700, letterSpacing: 1.5, color: 'var(--text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayCases.map(c => (
+                    <tr key={c.case_id}
+                      onClick={() => { setActiveNav('cases'); setActiveCaseId(c.case_id) }}
+                      style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer', transition: 'background 0.15s' }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-card-hover, rgba(255,255,255,0.03))'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                      <td style={{ padding: '14px 16px' }}>
+                        <span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 600, color: c.escalated && !c.taken_over ? 'var(--danger)' : 'var(--text-secondary)' }}>{c.case_id}</span>
+                      </td>
+                      <td style={{ padding: '14px 16px', fontSize: 13, color: 'var(--text-primary)', maxWidth: 200 }}>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.issue || c.issue_summary || '—'}</div>
+                      </td>
+                      <td style={{ padding: '14px 16px', fontSize: 12, color: 'var(--text-secondary)' }}>{c.intent || '—'}</td>
+                      <td style={{ padding: '14px 16px', fontSize: 12, fontFamily: 'monospace', color: 'var(--text-primary)' }}>{c.amount ? `₹${c.amount.toLocaleString()}` : '—'}</td>
+                      <td style={{ padding: '14px 16px' }}>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                          background: c.taken_over ? 'rgba(52,211,153,0.12)' : c.escalated ? 'rgba(248,113,113,0.12)' : 'rgba(251,191,36,0.12)',
+                          color: c.taken_over ? 'var(--success)' : c.escalated ? 'var(--danger)' : 'var(--warning)',
+                        }}>
+                          {c.taken_over ? 'RESOLVED' : c.escalated ? 'ESCALATED' : c.status || 'LIVE'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '14px 16px' }}>
+                        {typeof c.confidence_display === 'number' ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div style={{ flex: 1, height: 4, background: 'var(--bg-elevated)', borderRadius: 2, overflow: 'hidden', maxWidth: 60 }}>
+                              <div style={{ width: `${c.confidence_display}%`, height: '100%', background: c.confidence_display >= 60 ? 'var(--success)' : 'var(--danger)', borderRadius: 2 }} />
+                            </div>
+                            <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: c.confidence_display >= 60 ? 'var(--success)' : 'var(--danger)' }}>{c.confidence_display}%</span>
+                          </div>
+                        ) : '—'}
+                      </td>
+                      <td style={{ padding: '14px 16px', fontSize: 11, color: 'var(--text-muted)' }}>{c.language?.join(' / ') || '—'}</td>
+                      <td style={{ padding: '14px 16px', fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        {c.created_at ? new Date(c.created_at).toLocaleTimeString() : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ──── CASES PAGE (3-column layout) ──── */}
+        {activeNav === 'cases' && <div style={{
           display: 'grid',
           gridTemplateColumns: '280px minmax(0, 1fr) 340px',
           gap: 20,
@@ -887,7 +1002,7 @@ export default function Agent() {
               )}
             </div>
           </section>
-        </div>
+        </div>}
       </main>
     </div>
   )
