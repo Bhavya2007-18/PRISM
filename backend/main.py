@@ -54,6 +54,7 @@ class SessionStartRequest(BaseModel):
     channel: str
     user_uid: int
     language: Optional[str] = None
+    locale: Optional[str] = None
 
 class SessionStopRequest(BaseModel):
     agent_id: str
@@ -63,6 +64,7 @@ class ChatRequest(BaseModel):
     message: str
     channel: str = "prism-text"
     language: Optional[str] = None
+    locale: Optional[str] = None
 
 
 # ── /health ───────────────────────────────────────────────────────────
@@ -161,6 +163,10 @@ async def start_session(req: SessionStartRequest):
     # Ensure case state exists for this channel
     from context import get_or_create_case
     case = get_or_create_case(req.channel)
+    case.agora_channel = req.channel
+    case.voice_mode = "agora_rtc"
+    if req.locale:
+        case.locale = req.locale
     if req.language and req.language not in case.language:
         case.language.append(req.language)
 
@@ -664,6 +670,64 @@ async def llm_proxy(request: Request, channel: str = Query(default="prism-demo")
 
 # ── Helper functions ──────────────────────────────────────────────────
 
+
+def _build_ai_state(case, action, reason: str, tool_executed=None, tool_result=None, tool_status=None) -> dict:
+    """
+    Build structured ai_state for frontend consumption.
+    Represents PRISM's current operational state -- not internal reasoning.
+    Safe to expose. Never exposes API keys, prompts, or chain-of-thought.
+    """
+    from confidence import get_confidence_report
+
+    report = get_confidence_report(case)
+
+    phase_map = {
+        "ASK": "THINKING", "CONFIRM": "THINKING",
+        "TOOL_CALL": "ACTING", "RESOLVE": "SPEAKING", "ESCALATE": "ESCALATING",
+    }
+    action_label_map = {
+        "ASK": "ASK_CLARIFICATION", "CONFIRM": "CONFIRM_INFORMATION",
+        "TOOL_CALL": "VERIFY_TRANSACTION", "RESOLVE": "RESOLVE_CASE",
+        "ESCALATE": "ESCALATE_TO_HUMAN",
+    }
+
+    action_val = action.value if hasattr(action, "value") else str(action)
+    phase = phase_map.get(action_val, "THINKING")
+    action_label = action_label_map.get(action_val, "UNDERSTAND_REQUEST")
+
+    if tool_status == "running":
+        phase = "ACTING"
+    elif tool_status == "completed" and action_val != "ESCALATE":
+        phase = "SPEAKING"
+    elif tool_status == "failed":
+        phase = "ESCALATING"
+    if case.taken_over:
+        phase = "HUMAN_CONNECTED"
+
+    safe_tool_result = None
+    if tool_result and isinstance(tool_result, dict) and tool_result.get("success"):
+        safe_tool_result = {
+            k: v for k, v in tool_result.items()
+            if k in ("transaction_id", "amount", "status", "order_status", "merchant")
+        }
+
+    return {
+        "phase": phase,
+        "intent": case.intent,
+        "language": list(case.language) if case.language else [],
+        "confidence": report.display_score,
+        "confidence_label": report.overall_label,
+        "confidence_fields": {k: v.value for k, v in report.fields.items()},
+        "action": action_label,
+        "verified": list(case.verified),
+        "unverified": list(case.unverified),
+        "tool": tool_executed,
+        "tool_status": tool_status,
+        "tool_result": safe_tool_result,
+        "blocking_fields": report.blocking_fields,
+    }
+
+
 def _extract_and_strip(content: str) -> tuple[str, dict | None]:
     """Remove <EXTRACT>...</EXTRACT> from LLM response and parse the JSON."""
     pattern = r'<EXTRACT>(.*?)</EXTRACT>'
@@ -941,12 +1005,15 @@ async def chat(req: ChatRequest):
                 _trigger_escalation(case, reason_after)
 
             case.conversation_history.append({"role": "assistant", "content": clean_content})
+            _ts = "completed" if (tool_result and tool_result.get("success")) else ("failed" if case.tool_failed else "completed")
             return {
                 "reply": clean_content,
                 "escalated": case.escalated,
                 "case_id": case.case_id if case.escalated else None,
                 "action": action_after.value,
                 "reason_for_escalation": (reason_after if case.escalated else None),
+                "turn_id": f"turn_{uuid.uuid4().hex[:8]}",
+                "ai_state": _build_ai_state(case, action_after, reason_after, tool_executed, tool_result, _ts),
             }
 
         # ── Normal LLM response ───────────────────────────────────────────
@@ -970,6 +1037,8 @@ async def chat(req: ChatRequest):
             "case_id": case.case_id if case.escalated else None,
             "action": action_final.value,
             "reason_for_escalation": (reason_final if case.escalated else None),
+            "turn_id": f"turn_{uuid.uuid4().hex[:8]}",
+            "ai_state": _build_ai_state(case, action_final, reason_final),
         }
 
     # ── LLM unavailable → 100% deterministic fallback ──────────────────
@@ -988,6 +1057,8 @@ async def chat(req: ChatRequest):
         "case_id": case.case_id if case.escalated else None,
         "action": act_final.value,
         "reason_for_escalation": (reason_final if case.escalated else None),
+        "turn_id": f"turn_{uuid.uuid4().hex[:8]}",
+        "ai_state": _build_ai_state(case, act_final, reason_final, tool_executed, tool_result),
     }
 
 
@@ -1043,6 +1114,22 @@ async def debug_case(channel: str):
     case = cases[channel]
     report = get_confidence_report(case)
     action, reason = decide(case)
+    # Derive voice_state from case
+    if case.taken_over:
+        voice_state = "HUMAN_CONNECTED"
+    elif case.escalated:
+        voice_state = "ESCALATING"
+    elif case.payment_status and case.duplicate_charge == "UNKNOWN":
+        voice_state = "ESCALATING"
+    elif case.transaction_id and not case.payment_status:
+        voice_state = "ACTING"
+    elif case.intent:
+        voice_state = "THINKING"
+    elif case.last_user_text:
+        voice_state = "UNDERSTANDING"
+    else:
+        voice_state = "LISTENING"
+
     return {
         "case": {
             "case_id": case.case_id,
@@ -1053,19 +1140,74 @@ async def debug_case(channel: str):
             "order_status": case.order_status,
             "duplicate_charge": case.duplicate_charge,
             "language": case.language,
+            "locale": case.locale,
+            "voice_mode": case.voice_mode,
             "verified": case.verified,
             "unverified": case.unverified,
             "escalated": case.escalated,
             "escalation_reason": case.escalation_reason,
             "taken_over": case.taken_over,
+            "last_user_text": case.last_user_text,
         },
         "confidence": {
             "fields": {k: v.value for k, v in report.fields.items()},
             "display_score": report.display_score,
             "label": report.overall_label,
+            "blocking_fields": report.blocking_fields,
         },
         "next_action": action.value,
         "next_reason": reason,
+        "voice_state": voice_state,
+        "ai_state": _build_ai_state(case, action, reason),
+    }
+
+
+# ── /state/{channel} — lightweight realtime state polling ────────────────
+
+@app.get("/state/{channel}")
+async def get_channel_state(channel: str):
+    """
+    Lightweight real-time state for frontend ThinkingPanel polling.
+    Returns only safe operational state -- no internal data.
+    """
+    from context import cases
+    from confidence import get_confidence_report
+    from decision import decide
+
+    if channel not in cases:
+        return {
+            "channel": channel,
+            "voice_state": "IDLE",
+            "ai_state": None,
+            "escalated": False,
+            "taken_over": False,
+        }
+
+    case = cases[channel]
+    action, reason = decide(case)
+
+    if case.taken_over:
+        voice_state = "HUMAN_CONNECTED"
+    elif case.escalated:
+        voice_state = "ESCALATING"
+    elif case.payment_status and case.duplicate_charge == "UNKNOWN":
+        voice_state = "ESCALATING"
+    elif case.transaction_id and not case.payment_status:
+        voice_state = "ACTING"
+    elif case.intent:
+        voice_state = "THINKING"
+    elif case.last_user_text:
+        voice_state = "UNDERSTANDING"
+    else:
+        voice_state = "LISTENING"
+
+    return {
+        "channel": channel,
+        "case_id": case.case_id,
+        "voice_state": voice_state,
+        "ai_state": _build_ai_state(case, action, reason),
+        "escalated": case.escalated,
+        "taken_over": case.taken_over,
     }
 
 

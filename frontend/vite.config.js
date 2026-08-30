@@ -13,6 +13,8 @@ export default defineConfig({
       '/mock': 'http://localhost:8001',
       '/health': 'http://localhost:8001',
       '/chat': 'http://localhost:8001',
+      '/debug': 'http://localhost:8001',
+      '/state': 'http://localhost:8001',
     }
   }
 })

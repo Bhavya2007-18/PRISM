@@ -17,3 +17,20 @@ export async function apiFetch(path, options = {}) {
   const url = getApiUrl(path);
   return fetch(url, options);
 }
+
+/**
+ * Safely fetches JSON from an API endpoint.
+ * Ensures response is 200 OK and content-type is application/json before parsing.
+ * Prevents "Unexpected token '<', '<!DOCTYPE '... is not valid JSON" errors when backend is offline or serving HTML fallback pages.
+ */
+export async function safeFetchJson(path, options = {}) {
+  const res = await apiFetch(path, options);
+  if (!res.ok) {
+    throw new Error(`HTTP error ${res.status}`);
+  }
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('Backend server returned non-JSON response (ensure Python backend is running on port 8001)');
+  }
+  return res.json();
+}

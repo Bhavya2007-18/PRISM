@@ -18,6 +18,9 @@ class CaseState:
     order_status: Optional[str] = None      # "CONFIRMED" / "NOT_CONFIRMED"
     duplicate_charge: str = "UNKNOWN"       # "YES" / "NO" / "UNKNOWN"
     language: list = field(default_factory=list)
+    locale: Optional[str] = "en-IN"
+    voice_mode: str = "agora_rtc"
+    agora_channel: Optional[str] = None
     has_contradiction: bool = False
     tool_failed: bool = False
     user_requested_human: bool = False

@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import AgoraRTC from 'agora-rtc-sdk-ng'
 import EscalationPanel from '../components/EscalationPanel'
 import CasePanel from '../components/CasePanel'
 import AIActionPanel from '../components/AIActionPanel'
 import { getApiUrl } from '../lib/api'
+import ThinkingPanel from '../components/ThinkingPanel'
 
 const DEMO_CASES = [
   {
@@ -125,6 +127,65 @@ export default function Agent() {
   const [showToolAction, setShowToolAction] = useState(false)
   const [showEscalation, setShowEscalation] = useState(false)
   const [demoMode, setDemoMode] = useState(true)
+  const [agentAudioConnected, setAgentAudioConnected] = useState(false)
+  const [agentMuted, setAgentMuted] = useState(false)
+  const agentClientRef = useRef(null)
+  const agentMicRef = useRef(null)
+  const [liveVoiceState, setLiveVoiceState] = useState('IDLE')
+  const [liveAiState, setLiveAiState] = useState(null)
+
+  const handleAgentAgoraJoin = async (targetChannel = 'prism-demo') => {
+    try {
+      const AGENT_UID = 88888
+      const tokenResp = await fetch(getApiUrl(`/token?channel=${targetChannel}&uid=${AGENT_UID}`))
+      if (!tokenResp.ok) return
+      const contentType = tokenResp.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) return
+      const tokenData = await tokenResp.json()
+
+      const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' })
+      agentClientRef.current = client
+
+      client.on('user-published', async (user, mediaType) => {
+        await client.subscribe(user, mediaType)
+        if (mediaType === 'audio') {
+          user.audioTrack?.play()
+        }
+      })
+
+      await client.join(tokenData.app_id, targetChannel, tokenData.token, AGENT_UID)
+      
+      try {
+        const micTrack = await AgoraRTC.createMicrophoneAudioTrack({ encoderConfig: 'speech_standard' })
+        agentMicRef.current = micTrack
+        await client.publish([micTrack])
+      } catch (e) {
+        console.warn('[Agent Dashboard] Optional mic error:', e)
+      }
+
+      setAgentAudioConnected(true)
+    } catch (e) {
+      console.warn('[Agent Dashboard] Agora takeover join error:', e)
+    }
+  }
+
+  const disconnectAgentAudio = async () => {
+    try {
+      agentMicRef.current?.close()
+      await agentClientRef.current?.leave()
+    } catch (e) {}
+    agentClientRef.current = null
+    agentMicRef.current = null
+    setAgentAudioConnected(false)
+  }
+
+  const toggleAgentMute = () => {
+    if (agentMicRef.current) {
+      const newMuted = !agentMuted
+      agentMicRef.current.setEnabled(!newMuted)
+      setAgentMuted(newMuted)
+    }
+  }
 
   useEffect(() => {
     let mounted = true
@@ -133,6 +194,8 @@ export default function Agent() {
       try {
         const res = await fetch(getApiUrl('/cases'))
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const contentType = res.headers.get('content-type') || ''
+        if (!contentType.includes('application/json')) throw new Error('Non-JSON response from backend')
         const data = await res.json()
         if (mounted) {
           const allCases = data.cases || []
@@ -159,6 +222,30 @@ export default function Agent() {
     const interval = setInterval(poll, 3000)
     return () => { mounted = false; clearInterval(interval) }
   }, [activeCaseId])
+
+  // Poll /state/{channel} for live AI state when a case is active
+  useEffect(() => {
+    if (!activeCaseId || demoMode) return
+    let mounted = true
+    // Derive channel from case_id: use prism-text as default for text cases
+    const channel = 'prism-text'
+    const pollState = async () => {
+      try {
+        const res = await fetch(getApiUrl(`/state/${channel}`))
+        if (!res.ok) return
+        const ct = res.headers.get('content-type') || ''
+        if (!ct.includes('application/json')) return
+        const data = await res.json()
+        if (mounted) {
+          setLiveVoiceState(data.voice_state || 'IDLE')
+          setLiveAiState(data.ai_state || null)
+        }
+      } catch {}
+    }
+    pollState()
+    const si = setInterval(pollState, 2000)
+    return () => { mounted = false; clearInterval(si) }
+  }, [activeCaseId, demoMode])
 
   useEffect(() => {
     if (!demoMode) return
@@ -887,43 +974,69 @@ export default function Agent() {
                     setCases(prev => prev.map(p =>
                       p.case_id === id ? { ...p, taken_over: true, status: 'TAKEN_OVER' } : p
                     ))
+                    handleAgentAgoraJoin(activeCase?.channel || 'prism-demo')
                   }}
                 />
               </div>
             )}
 
-            {/* Bottom input bar (visual only) */}
+            {/* Bottom input bar & Live Agora controls */}
             <div style={{
               padding: '12px 0 0',
               borderTop: showEscalation ? 'none' : '1px solid var(--border)',
               display: 'flex',
+              flexDirection: 'column',
               gap: 10,
-              alignItems: 'center',
             }}>
               <div style={{
-                flex: 1,
-                padding: '10px 14px',
-                background: 'var(--bg-elevated)',
-                border: '1px solid var(--border)',
-                borderRadius: 10,
-                fontSize: 12,
-                color: 'var(--text-muted)',
+                display: 'flex',
+                gap: 10,
+                alignItems: 'center',
               }}>
-                {activeCase?.taken_over
-                  ? 'You are now speaking with the customer...'
-                  : showEscalation
-                    ? 'Click "TAKE OVER" above to join the call'
-                    : 'PRISM is handling this conversation'}
+                <div style={{
+                  flex: 1,
+                  padding: '10px 14px',
+                  background: agentAudioConnected ? 'rgba(52,211,153,0.08)' : 'var(--bg-elevated)',
+                  border: `1px solid ${agentAudioConnected ? 'rgba(52,211,153,0.25)' : 'var(--border)'}`,
+                  borderRadius: 10,
+                  fontSize: 12,
+                  color: agentAudioConnected ? 'var(--success)' : 'var(--text-muted)',
+                  fontWeight: agentAudioConnected ? 600 : 400,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}>
+                  <span>{agentAudioConnected ? '🟢' : '🎙️'}</span>
+                  <span>
+                    {agentAudioConnected
+                      ? `AGORA REALTIME AUDIO CONNECTED (Channel: ${activeCase?.channel || 'prism-demo'})`
+                      : activeCase?.taken_over
+                        ? 'Connected with customer'
+                        : showEscalation
+                          ? 'Click "TAKE OVER" above to join the live call'
+                          : 'PRISM AI active'}
+                  </span>
+                </div>
+
+                {agentAudioConnected && (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      onClick={toggleAgentMute}
+                      className="btn-secondary"
+                      style={{ padding: '8px 12px', fontSize: 11 }}
+                    >
+                      {agentMuted ? 'Unmute Mic' : 'Mute Mic'}
+                    </button>
+                    <button
+                      onClick={disconnectAgentAudio}
+                      className="btn-danger"
+                      style={{ padding: '8px 12px', fontSize: 11 }}
+                    >
+                      Disconnect Call
+                    </button>
+                  </div>
+                )}
               </div>
-              {activeCase?.taken_over && (
-                <button
-                  className="btn-primary"
-                  style={{ padding: '10px 18px', fontSize: 12 }}
-                  disabled
-                >
-                  🎙 On call
-                </button>
-              )}
             </div>
           </section>
 
@@ -981,6 +1094,19 @@ export default function Agent() {
                 </div>
               )}
             </div>
+
+            {/* Live AI State panel */}
+            {(liveVoiceState !== 'IDLE' || liveAiState) && (
+              <div className="glass-panel" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="label-text" style={{ margin: 0 }}>Live AI State</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, letterSpacing: 1.5, color: liveVoiceState === 'ESCALATING' ? 'var(--danger)' : liveVoiceState === 'ACTING' ? '#fbbf24' : 'var(--success)', textTransform: 'uppercase' }}>{liveVoiceState}</span>
+                </div>
+                <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  <ThinkingPanel voiceState={liveVoiceState} aiState={liveAiState} />
+                </div>
+              </div>
+            )}
 
             {/* Structured case intel */}
             <div className="glass-panel" style={{

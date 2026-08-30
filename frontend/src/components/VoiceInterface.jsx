@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import AgoraRTC from 'agora-rtc-sdk-ng'
 import { getApiUrl } from '../lib/api'
-import { LANGUAGES, DEFAULT_LANGUAGE, getLanguageConfig } from '../lib/languages'
+import { LANGUAGES, DEFAULT_LANGUAGE, getLanguageConfig } from '../config/languages'
+import { ttsManager } from '../lib/tts'
+import ThinkingPanel from './ThinkingPanel'
 
 const CHANNEL = 'prism-demo'
 const TEXT_CHANNEL = 'prism-text'
@@ -38,6 +40,9 @@ export default function VoiceInterface() {
   const [chatSending, setChatSending] = useState(false)
   const [demoMode, setDemoMode] = useState(false)
   const [waveformBars, setWaveformBars] = useState(Array(24).fill(0.2))
+  const [voiceState, setVoiceState] = useState('IDLE')
+  const [aiState, setAiState] = useState(null)
+  const [turnId, setTurnId] = useState(null)
 
   const [selectedLanguage, setSelectedLanguage] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -53,55 +58,31 @@ export default function VoiceInterface() {
   const chatEndRef = useRef(null)
   const greetingPlayedRef = useRef(false)
 
-  // Cleanup browser speech synthesis on unmount
+  // Pre-warm TTS voices on mount so they are ready before first click.
+  // Chrome/Edge load voices asynchronously — without this, the first
+  // speak() call on page load finds an empty voice list and falls back
+  // to the browser default (English), ignoring the selected locale.
   useEffect(() => {
+    ttsManager._getVoicesReady().then(voices => {
+      console.info(`[PRISM TTS] Pre-warmed: ${voices.length} voices available`)
+    })
     return () => {
       cancelSpeech()
     }
   }, [])
 
   const cancelSpeech = () => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel()
-      } catch (e) {}
-    }
+    ttsManager.cancel()
     setPrismSpeaking(false)
   }
 
   const speakGreeting = (langKey) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
     const config = getLanguageConfig(langKey)
-    cancelSpeech()
-
-    try {
-      const utterance = new SpeechSynthesisUtterance(config.greeting)
-      utterance.lang = config.locale
-      utterance.rate = 0.95
-      utterance.pitch = 1
-
-      // Dynamic voice selection using getVoices()
-      const voices = window.speechSynthesis.getVoices()
-      if (voices && voices.length > 0) {
-        let matchedVoice = voices.find(v => v.lang.toLowerCase() === config.locale.toLowerCase())
-        if (!matchedVoice) {
-          const langCode = config.locale.split('-')[0].toLowerCase()
-          matchedVoice = voices.find(v => v.lang.toLowerCase().startsWith(langCode))
-        }
-        if (matchedVoice) {
-          utterance.voice = matchedVoice
-        }
-      }
-
-      utterance.onstart = () => setPrismSpeaking(true)
-      utterance.onend = () => setPrismSpeaking(false)
-      utterance.onerror = () => setPrismSpeaking(false)
-
-      window.speechSynthesis.speak(utterance)
-    } catch (e) {
-      console.warn('[PRISM TTS] Speech synthesis error:', e)
-      setPrismSpeaking(false)
-    }
+    ttsManager.speak(config.greeting, langKey, {
+      onStart: () => setPrismSpeaking(true),
+      onEnd: () => setPrismSpeaking(false),
+      onError: () => setPrismSpeaking(false),
+    })
   }
 
   const handleLanguageChange = (langKey) => {
@@ -125,7 +106,8 @@ export default function VoiceInterface() {
     const pollTakeover = async () => {
       try {
         const res = await fetch(getApiUrl(`/debug/case/${channel}`))
-        if (res.ok) {
+        const contentType = res.headers.get('content-type') || ''
+        if (res.ok && contentType.includes('application/json')) {
           const data = await res.json()
           if (data.case?.taken_over && mounted) {
             setTakenOver(true)
@@ -184,8 +166,10 @@ export default function VoiceInterface() {
     }
 
     if (demoMode) {
+      setVoiceState('CONNECTING')
       setTimeout(() => {
         setStatus('connected')
+        setVoiceState('LISTENING')
         setMessages([{ role: 'assistant', content: 'Namaste! How can I help you today?' }])
       }, 1000)
       return
@@ -209,7 +193,11 @@ export default function VoiceInterface() {
 
       if (mode === 'voice') {
         const tokenResp = await fetch(getApiUrl(`/token?channel=${CHANNEL}&uid=${uid}`))
-        if (!tokenResp.ok) throw new Error('Failed to get token')
+        if (!tokenResp.ok) throw new Error('Failed to fetch Agora token')
+        const contentType = tokenResp.headers.get('content-type') || ''
+        if (!contentType.includes('application/json')) {
+          throw new Error('Backend server is offline or returned HTML page. Please ensure Python backend is running on port 8001.')
+        }
         const tokenData = await tokenResp.json()
 
         await client.join(tokenData.app_id, CHANNEL, tokenData.token, uid)
@@ -219,19 +207,22 @@ export default function VoiceInterface() {
       }
 
       try {
+        const langConfig = getLanguageConfig(selectedLanguage)
         const sessionResp = await fetch(getApiUrl('/session/start'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             channel: mode === 'chat' ? TEXT_CHANNEL : CHANNEL,
             user_uid: uid,
-            language: selectedLanguage,
+            language: langConfig.name,
+            locale: langConfig.locale,
           }),
         })
         if (sessionResp.ok) sessionRef.current = await sessionResp.json()
       } catch (e) {}
 
       setStatus('connected')
+      setVoiceState('LISTENING')
     } catch (err) {
       setError(err.message || 'Connection failed')
       setStatus('error')
@@ -247,6 +238,8 @@ export default function VoiceInterface() {
     cancelSpeech()
     greetingPlayedRef.current = false
     setStatus('idle')
+    setVoiceState('IDLE')
+    setAiState(null)
     setAgentActive(false)
     setEscalated(false)
     setTakenOver(false)
@@ -304,15 +297,19 @@ export default function VoiceInterface() {
 
     setChatInput('')
     setChatSending(true)
+    setVoiceState('UNDERSTANDING')
     const userMsg = { role: 'user', content: text }
     setMessages(prev => [...prev, userMsg])
 
     let backendReply = null
     let backendEscalate = false
     let backendCaseId = null
+    let backendAiState = null
+    let backendTurnId = null
     let usedBackend = false
 
     try {
+      setVoiceState('THINKING')
       const res = await fetch(getApiUrl('/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -332,6 +329,8 @@ export default function VoiceInterface() {
             backendReply = replyText
             backendEscalate = !!data.escalated
             backendCaseId = data.case_id
+            backendAiState = data.ai_state || null
+            backendTurnId = data.turn_id || null
             usedBackend = true
           } else if (replyText) {
             console.warn('[PRISM] Backend reply contained error text, falling back to demo reply:', replyText.slice(0, 100))
@@ -340,36 +339,49 @@ export default function VoiceInterface() {
       }
     } catch (e) {}
 
+    let reply
+    let escalate
+    let caseId
+    if (usedBackend && backendReply) {
+      reply = backendReply
+      escalate = backendEscalate
+      caseId = backendCaseId
+    } else {
+      const demo = getDemoReply(text)
+      reply = demo.reply
+      escalate = demo.escalate
+    }
+
+    setMessages(prev => [...prev, { role: 'assistant', content: reply }])
+
+    if (backendAiState) {
+      setAiState(backendAiState)
+      setVoiceState(backendAiState.phase || 'SPEAKING')
+    } else {
+      setVoiceState('SPEAKING')
+    }
+    if (backendTurnId) setTurnId(backendTurnId)
+
+    if (escalate) {
+      const finalCaseId = caseId || 'PRISM-' + Math.floor(1040 + Math.random() * 50)
+      setVoiceState('ESCALATING')
+      setTimeout(() => {
+        setEscalated(true)
+        setEscalatedCaseId(finalCaseId)
+        setMessages(prev => [...prev, {
+          role: 'system',
+          content: `Case escalated (${finalCaseId}). Tap "Dashboard" for agent view.`,
+        }])
+      }, 1000)
+    }
+
+    // Transition back to LISTENING after speaking duration (content-length based, not fixed)
+    const speakDuration = Math.min(3000, Math.max(800, (reply?.length || 50) * 45))
     setTimeout(() => {
-      let reply
-      let escalate
-      let caseId
-      if (usedBackend && backendReply) {
-        reply = backendReply
-        escalate = backendEscalate
-        caseId = backendCaseId
-      } else {
-        const demo = getDemoReply(text)
-        reply = demo.reply
-        escalate = demo.escalate
-      }
+      if (!escalate) setVoiceState('LISTENING')
+    }, speakDuration)
 
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }])
-
-      if (escalate) {
-        const finalCaseId = caseId || 'PRISM-' + Math.floor(1040 + Math.random() * 50)
-        setTimeout(() => {
-          setEscalated(true)
-          setEscalatedCaseId(finalCaseId)
-          setMessages(prev => [...prev, {
-            role: 'system',
-            content: `Case escalated (${finalCaseId}). Tap "Dashboard" for agent view.`,
-          }])
-        }, 1000)
-      }
-
-      setChatSending(false)
-    }, usedBackend ? 100 : 800)
+    setChatSending(false)
   }
 
   function handleChatKeyDown(e) {
@@ -880,6 +892,16 @@ export default function VoiceInterface() {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ThinkingPanel - live AI state (chat mode only, when not idle) */}
+      {mode === 'chat' && voiceState !== 'IDLE' && (
+        <div style={{ marginTop: 8, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--bg-card)', overflow: 'hidden', maxHeight: 280, overflowY: 'auto' }}>
+          <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 2, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Live AI State</span>
+          </div>
+          <ThinkingPanel voiceState={voiceState} aiState={aiState} />
         </div>
       )}
 

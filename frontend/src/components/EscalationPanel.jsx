@@ -203,15 +203,20 @@ export default function EscalationPanel({ caseData, onTakeOver, compact = false 
                   marginTop: 4,
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 8,
+                  gap: 10,
+                  flexWrap: 'wrap',
                 }}>
-                  PRISM confidence:
+                  <span>PRISM confidence: <strong style={{ color: confColor, fontSize: 14 }}>{confidence}%</strong></span>
                   <span style={{
-                    fontSize: 14,
-                    fontWeight: 800,
-                    color: confColor,
+                    fontSize: 11,
+                    padding: '2px 10px',
+                    borderRadius: 12,
+                    background: 'rgba(124,111,255,0.15)',
+                    color: 'var(--accent-soft)',
+                    fontWeight: 600,
+                    border: '1px solid var(--border-accent)',
                   }}>
-                    {confidence}%
+                    🌐 Language: {(caseData.language?.length ? caseData.language.join(', ') : 'Hindi')}
                   </span>
                 </div>
               </div>
