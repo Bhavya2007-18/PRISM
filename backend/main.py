@@ -22,9 +22,22 @@ load_dotenv(override=True)
 
 app = FastAPI(title="PRISM Backend", version="1.0.0")
 
+frontend_url = os.getenv("FRONTEND_URL", "")
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+]
+if frontend_url:
+    for origin in frontend_url.split(","):
+        origin_clean = origin.strip().rstrip("/")
+        if origin_clean and origin_clean not in allowed_origins:
+            allowed_origins.append(origin_clean)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
+    allow_origins=allowed_origins if "*" not in allowed_origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,14 +66,16 @@ class ChatRequest(BaseModel):
 # ── /health ───────────────────────────────────────────────────────────
 
 @app.get("/health")
-async def health():
-    return {"status": "ok", "service": "PRISM Backend", "version": "1.0.0"}
+def health():
+    return {
+        "status": "ok",
+        "service": "prism-backend"
+    }
 
 
 @app.get("/chat/test")
 async def chat_test():
-    """Debug endpoint — tests LLM connectivity and returns the raw result or error."""
-    import traceback
+    """Debug endpoint — tests LLM connectivity and returns basic connectivity status."""
     llm_base_url = os.getenv("LLM_BASE_URL", "")
     llm_api_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL", "")
@@ -68,8 +83,7 @@ async def chat_test():
     result = {
         "llm_base_url": llm_base_url,
         "llm_model": llm_model,
-        "api_key_set": bool(llm_api_key),
-        "api_key_prefix": llm_api_key[:8] if llm_api_key else "EMPTY",
+        "api_key_configured": bool(llm_api_key),
     }
     
     try:
@@ -85,16 +99,13 @@ async def chat_test():
                 }
             )
         result["status_code"] = resp.status_code
-        result["response_preview"] = resp.text[:300]
         if resp.status_code == 200:
             result["success"] = True
-            result["content"] = resp.json()["choices"][0]["message"].get("content")
         else:
             result["success"] = False
     except Exception as e:
         result["success"] = False
-        result["exception"] = str(e)
-        result["traceback"] = traceback.format_exc()
+        result["error"] = "Failed to connect to LLM service"
     
     return result
 
@@ -1050,3 +1061,10 @@ async def debug_case(channel: str):
         "next_action": action.value,
         "next_reason": reason,
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8001))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+

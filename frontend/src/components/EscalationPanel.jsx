@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { getApiUrl } from '../lib/api'
 
 export default function EscalationPanel({ caseData, onTakeOver, compact = false }) {
   const [loading, setLoading] = useState(false)
@@ -16,7 +17,7 @@ export default function EscalationPanel({ caseData, onTakeOver, compact = false 
     if (takenOver || loading) return
     setLoading(true)
     try {
-      const res = await fetch(`/cases/${caseData.case_id}/takeover`, { method: 'POST' })
+      const res = await fetch(getApiUrl(`/cases/${caseData.case_id}/takeover`), { method: 'POST' })
       if (res.ok) {
         setLocalTakenOver(true)
         onTakeOver?.(caseData.case_id)

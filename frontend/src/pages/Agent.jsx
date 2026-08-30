@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import EscalationPanel from '../components/EscalationPanel'
 import CasePanel from '../components/CasePanel'
 import AIActionPanel from '../components/AIActionPanel'
+import { getApiUrl } from '../lib/api'
 
 const DEMO_CASES = [
   {
@@ -130,7 +131,7 @@ export default function Agent() {
 
     async function poll() {
       try {
-        const res = await fetch('/cases')
+        const res = await fetch(getApiUrl('/cases'))
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
         if (mounted) {
@@ -881,7 +882,7 @@ export default function Agent() {
                   compact
                   onTakeOver={async (id) => {
                     try {
-                      await fetch(`/cases/${id}/takeover`, { method: 'POST' })
+                      await fetch(getApiUrl(`/cases/${id}/takeover`), { method: 'POST' })
                     } catch {}
                     setCases(prev => prev.map(p =>
                       p.case_id === id ? { ...p, taken_over: true, status: 'TAKEN_OVER' } : p

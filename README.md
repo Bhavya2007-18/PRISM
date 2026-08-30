@@ -320,8 +320,48 @@ See `.env.example` for all variables. Key ones:
 
 ---
 
+## Deployment
+
+### Frontend (Vercel)
+- **Framework Preset**: Vite
+- **Root Directory**: `frontend` (or repository root with `cd frontend && npm run build`)
+- **Build Command**: `npm run build`
+- **Output Directory**: `dist` (or `frontend/dist`)
+- **Environment Variables**:
+  - `VITE_API_URL`: `https://<your-render-backend-url>.onrender.com`
+
+### Backend (Render)
+- **Environment**: Python 3.11
+- **Root Directory**: `.` (or `backend`)
+- **Build Command**: `pip install -r requirements.txt`
+- **Start Command**: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+- **Environment Variables**:
+  - `PORT`: (Set automatically by Render)
+  - `FRONTEND_URL`: `https://<your-vercel-app>.vercel.app`
+  - `BACKEND_PUBLIC_URL`: `https://<your-render-backend-url>.onrender.com`
+  - `LLM_API_KEY`: Your LLM API key
+  - `LLM_BASE_URL`: `https://api.groq.com/openai/v1` (or your provider URL)
+  - `LLM_MODEL`: `openai/gpt-oss-20b` (or your model choice)
+  - `AGORA_APP_ID`: Your Agora App ID
+  - `AGORA_APP_CERTIFICATE`: Your Agora App Certificate
+  - `AGORA_CUSTOMER_ID`: Your Agora Customer ID
+  - `AGORA_CUSTOMER_SECRET`: Your Agora Customer Secret
+
+### Render Keep-Alive
+Render free web services spin down after ~15 minutes of inactivity. To maintain instant responsiveness during hackathon/demo evaluation:
+
+1. **Lightweight Health Endpoint**:
+   - `GET /health` returns `{"status":"ok","service":"prism-backend"}` without calling LLM or Agora APIs.
+2. **External Scheduler Setup**:
+   - Configure an uptime monitor (e.g. [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) to perform an HTTP `GET` request every 5 minutes.
+   - Target URL: `https://<your-render-backend-url>.onrender.com/health`
+   - Interval: `Every 5 minutes`
+
+---
+
 ## Hackathon
 
 **Event:** EchoSphere: Agora Conversational AI Hackathon  
 **Problem Statement:** PS51 — Multilingual Assistance-Line Agent with Human Escalation  
 **Team:** PRISM
+

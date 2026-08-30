@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import AgoraRTC from 'agora-rtc-sdk-ng'
+import { getApiUrl } from '../lib/api'
 
 const CHANNEL = 'prism-demo'
 const TEXT_CHANNEL = 'prism-text'
@@ -53,7 +54,7 @@ export default function VoiceInterface() {
     let mounted = true
     const pollTakeover = async () => {
       try {
-        const res = await fetch(`/debug/case/${channel}`)
+        const res = await fetch(getApiUrl(`/debug/case/${channel}`))
         if (res.ok) {
           const data = await res.json()
           if (data.case?.taken_over && mounted) {
@@ -115,7 +116,7 @@ export default function VoiceInterface() {
       const uid = userUidRef.current
       let tokenData = { token: 'demo-token-no-credentials', app_id: 'demo', warning: 'Running in demo mode' }
       try {
-        const tokenResp = await fetch(`/token?channel=${CHANNEL}&uid=${uid}`)
+        const tokenResp = await fetch(getApiUrl(`/token?channel=${CHANNEL}&uid=${uid}`))
         if (tokenResp.ok) tokenData = await tokenResp.json()
       } catch (e) {}
       if (tokenData.warning) console.warn('[PRISM]', tokenData.warning)
@@ -143,7 +144,7 @@ export default function VoiceInterface() {
       }
 
       try {
-        const sessionResp = await fetch('/session/start', {
+        const sessionResp = await fetch(getApiUrl('/session/start'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ channel: mode === 'chat' ? TEXT_CHANNEL : CHANNEL, user_uid: uid }),
@@ -171,7 +172,7 @@ export default function VoiceInterface() {
     setMessages([])
     try {
       if (sessionRef.current?.agent_id) {
-        await fetch('/session/stop', {
+        await fetch(getApiUrl('/session/stop'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agent_id: sessionRef.current.agent_id, channel: mode === 'chat' ? TEXT_CHANNEL : CHANNEL }),
@@ -259,7 +260,7 @@ export default function VoiceInterface() {
     let usedBackend = false
 
     try {
-      const res = await fetch('/chat', {
+      const res = await fetch(getApiUrl('/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({ message: text, channel: TEXT_CHANNEL }),
