@@ -42,7 +42,7 @@ export default function CasePanel({ caseData }) {
       <div>
         <div className="label-text">Language</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-          {(caseData.language?.length ? caseData.language : ['Hindi', 'English']).map(lang => (
+          {(caseData.language?.length ? caseData.language : ['English']).map(lang => (
             <span key={lang} style={{
               padding: '5px 12px',
               borderRadius: 20,

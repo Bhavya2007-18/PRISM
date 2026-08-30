@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import AgoraRTC from 'agora-rtc-sdk-ng'
 import { getApiUrl } from '../lib/api'
+import { LANGUAGES, DEFAULT_LANGUAGE, getLanguageConfig } from '../lib/languages'
 
 const CHANNEL = 'prism-demo'
 const TEXT_CHANNEL = 'prism-text'
@@ -27,6 +28,7 @@ export default function VoiceInterface() {
   const [mode, setMode] = useState('voice') // 'voice' | 'chat'
   const [status, setStatus] = useState('idle')
   const [agentActive, setAgentActive] = useState(false)
+  const [prismSpeaking, setPrismSpeaking] = useState(false)
   const [error, setError] = useState(null)
   const [escalated, setEscalated] = useState(false)
   const [takenOver, setTakenOver] = useState(false)
@@ -37,11 +39,79 @@ export default function VoiceInterface() {
   const [demoMode, setDemoMode] = useState(false)
   const [waveformBars, setWaveformBars] = useState(Array(24).fill(0.2))
 
+  const [selectedLanguage, setSelectedLanguage] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('prism_language') || DEFAULT_LANGUAGE
+    }
+    return DEFAULT_LANGUAGE
+  })
+
   const clientRef = useRef(null)
   const micTrackRef = useRef(null)
   const sessionRef = useRef(null)
   const userUidRef = useRef(Math.floor(Math.random() * 90000) + 10000)
   const chatEndRef = useRef(null)
+  const greetingPlayedRef = useRef(false)
+
+  // Cleanup browser speech synthesis on unmount
+  useEffect(() => {
+    return () => {
+      cancelSpeech()
+    }
+  }, [])
+
+  const cancelSpeech = () => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel()
+      } catch (e) {}
+    }
+    setPrismSpeaking(false)
+  }
+
+  const speakGreeting = (langKey) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    const config = getLanguageConfig(langKey)
+    cancelSpeech()
+
+    try {
+      const utterance = new SpeechSynthesisUtterance(config.greeting)
+      utterance.lang = config.locale
+      utterance.rate = 0.95
+      utterance.pitch = 1
+
+      // Dynamic voice selection using getVoices()
+      const voices = window.speechSynthesis.getVoices()
+      if (voices && voices.length > 0) {
+        let matchedVoice = voices.find(v => v.lang.toLowerCase() === config.locale.toLowerCase())
+        if (!matchedVoice) {
+          const langCode = config.locale.split('-')[0].toLowerCase()
+          matchedVoice = voices.find(v => v.lang.toLowerCase().startsWith(langCode))
+        }
+        if (matchedVoice) {
+          utterance.voice = matchedVoice
+        }
+      }
+
+      utterance.onstart = () => setPrismSpeaking(true)
+      utterance.onend = () => setPrismSpeaking(false)
+      utterance.onerror = () => setPrismSpeaking(false)
+
+      window.speechSynthesis.speak(utterance)
+    } catch (e) {
+      console.warn('[PRISM TTS] Speech synthesis error:', e)
+      setPrismSpeaking(false)
+    }
+  }
+
+  const handleLanguageChange = (langKey) => {
+    if (status === 'connected' || status === 'connecting') return
+    setSelectedLanguage(langKey)
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('prism_language', langKey)
+    }
+    cancelSpeech()
+  }
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -76,7 +146,7 @@ export default function VoiceInterface() {
     function animate() {
       setWaveformBars(prev =>
         prev.map(() => {
-          if (status !== 'connected') return 0.2
+          if (status !== 'connected' && !prismSpeaking) return 0.2
           return 0.2 + Math.random() * 0.8
         })
       )
@@ -84,7 +154,7 @@ export default function VoiceInterface() {
     }
     animate()
     return () => cancelAnimationFrame(animationId)
-  }, [status])
+  }, [status, prismSpeaking])
 
   useEffect(() => {
     if (!demoMode || status !== 'connected' || mode !== 'voice') return
@@ -99,44 +169,49 @@ export default function VoiceInterface() {
         }
       }, msg.delay)
     )
+
     return () => timers.forEach(clearTimeout)
   }, [demoMode, status, mode])
 
   async function connect() {
-    setStatus('connecting')
     setError(null)
-    setMessages(mode === 'chat' ? [
-      { role: 'assistant', content: 'Namaste! Main PRISM hoon. Aap kaise help kar sakta hoon?' }
-    ] : [])
-    setEscalated(false)
-    setTakenOver(false)
-    setEscalatedCaseId(null)
+    setStatus('connecting')
+
+    // Trigger non-blocking spoken greeting on initial connect for this session
+    if (!greetingPlayedRef.current) {
+      greetingPlayedRef.current = true
+      speakGreeting(selectedLanguage)
+    }
+
+    if (demoMode) {
+      setTimeout(() => {
+        setStatus('connected')
+        setMessages([{ role: 'assistant', content: 'Namaste! How can I help you today?' }])
+      }, 1000)
+      return
+    }
 
     try {
       const uid = userUidRef.current
-      let tokenData = { token: 'demo-token-no-credentials', app_id: 'demo', warning: 'Running in demo mode' }
-      try {
+      const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' })
+      clientRef.current = client
+
+      client.on('user-published', async (user, mediaType) => {
+        await client.subscribe(user, mediaType)
+        if (mediaType === 'audio') {
+          user.audioTrack?.play()
+          setAgentActive(true)
+        }
+      })
+      client.on('user-unpublished', (user, mediaType) => {
+        if (mediaType === 'audio') setAgentActive(false)
+      })
+
+      if (mode === 'voice') {
         const tokenResp = await fetch(getApiUrl(`/token?channel=${CHANNEL}&uid=${uid}`))
-        if (tokenResp.ok) tokenData = await tokenResp.json()
-      } catch (e) {}
-      if (tokenData.warning) console.warn('[PRISM]', tokenData.warning)
+        if (!tokenResp.ok) throw new Error('Failed to get token')
+        const tokenData = await tokenResp.json()
 
-      const isDemo = !tokenData.app_id || tokenData.app_id === 'demo' || tokenData.token === 'demo-token-no-credentials'
-      setDemoMode(isDemo)
-
-      if (!isDemo && mode === 'voice') {
-        const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' })
-        clientRef.current = client
-        client.on('user-published', async (user, mediaType) => {
-          await client.subscribe(user, mediaType)
-          if (mediaType === 'audio') {
-            user.audioTrack?.play()
-            if (user.uid === AGENT_UID) setAgentActive(true)
-          }
-        })
-        client.on('user-unpublished', (user) => { if (user.uid === AGENT_UID) setAgentActive(false) })
-        client.on('user-left', (user) => { if (user.uid === AGENT_UID) setAgentActive(false) })
-        client.on('connection-state-change', (s) => { if (s === 'DISCONNECTED') setStatus('idle') })
         await client.join(tokenData.app_id, CHANNEL, tokenData.token, uid)
         const micTrack = await AgoraRTC.createMicrophoneAudioTrack({ encoderConfig: 'speech_standard' })
         micTrackRef.current = micTrack
@@ -147,7 +222,11 @@ export default function VoiceInterface() {
         const sessionResp = await fetch(getApiUrl('/session/start'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ channel: mode === 'chat' ? TEXT_CHANNEL : CHANNEL, user_uid: uid }),
+          body: JSON.stringify({
+            channel: mode === 'chat' ? TEXT_CHANNEL : CHANNEL,
+            user_uid: uid,
+            language: selectedLanguage,
+          }),
         })
         if (sessionResp.ok) sessionRef.current = await sessionResp.json()
       } catch (e) {}
@@ -156,6 +235,7 @@ export default function VoiceInterface() {
     } catch (err) {
       setError(err.message || 'Connection failed')
       setStatus('error')
+      cancelSpeech()
       micTrackRef.current?.close()
       await clientRef.current?.leave().catch(() => {})
       clientRef.current = null
@@ -164,6 +244,8 @@ export default function VoiceInterface() {
   }
 
   async function disconnect() {
+    cancelSpeech()
+    greetingPlayedRef.current = false
     setStatus('idle')
     setAgentActive(false)
     setEscalated(false)
@@ -198,55 +280,26 @@ export default function VoiceInterface() {
         escalate: true,
       }
     }
-
-    if (/(tx|transaction|ref|receipt|id)[\s_-]*[a-z0-9]{3,}|tx\d|tx\s*\d/i.test(t)) {
+    if (/(tx48291|48291)/i.test(t)) {
       return {
-        reply: 'Dhanyavaad! Main is transaction ko abhi verify karta hoon. Ek minute please...',
+        reply: 'Maine TX48291 check kar liya hai. Payment ₹1,499 successful raha lekin order confirm nahi hua. Duplicate charge ki wajah se main ise human specialist ko escalate kar raha hoon.',
+        escalate: true,
       }
     }
-
-    if (/(hi|hello|namaste|namaskar|suno|hlo|hey)/i.test(t)) {
+    if (/(kat gaya|payment|paise|deducted|paisa)/i.test(t)) {
       return {
-        reply: 'Namaste! Main PRISM hoon. Bataiye, kaise help kar sakta hoon aapki?',
+        reply: 'Main aapki madad kar sakta hoon. Kya aapke paas aapka Transaction ID hai? (e.g. TX48291)',
+        escalate: false,
       }
     }
-
-    if (/(payment|paise?|kat|cut|deduct|charge|debit|\brupee|rs\b|₹|inr)/i.test(t)) {
-      if (/(nahi|ni|nhi|not|without)/i.test(t) || /(confirm|order|mil|receive|receive|show|hona|hua)/i.test(t)) {
-        return {
-          reply: 'Samajh gaya — payment kat gaya but order confirm nahi hua, right? Kya aapke paas transaction ID hai? (jaise TX48291)',
-        }
-      }
-      return {
-        reply: 'Payment ke baare mein batayein — amount kitna tha aur kis order ke liye? Kya aapke paas transaction ID hai?',
-      }
-    }
-
-    if (/(order|booking|product|item|delivery|deliver|ship|track|status)/i.test(t)) {
-      return {
-        reply: 'Order issue, samajh gaya. Order ID ya transaction ID share karein, main abhi check karta hoon.',
-      }
-    }
-
-    if (/(refund|wapas|wapas|return|cancel|cancellation)/i.test(t)) {
-      return {
-        reply: 'Refund ya return ke liye order ID ya transaction ID dijiye, main process karne ki koshish karta hoon.',
-      }
-    }
-
-    if (/(thanks|thank|shukriya|dhanyavaad|theek|ok|okay|thik|accha)/i.test(t)) {
-      return {
-        reply: 'Koi baat nahi! Aur kuch help chahiye to batayega.',
-      }
-    }
-
     return {
-      reply: 'Samajh raha hoon. Thoda aur detail bataiye — kis chiz ki problem hai? Payment, Order, ya kuch aur?',
+      reply: `Samajh gaya. Aapne kaha: "${text}". Kya aap detail bta sakte hain ya Transaction ID share kar sakte hain?`,
+      escalate: false,
     }
   }
 
-  async function sendChatMessage() {
-    const text = chatInput.trim()
+  async function sendChatMessage(overrideText) {
+    const text = (overrideText || chatInput).trim()
     if (!text || chatSending) return
 
     setChatInput('')
@@ -263,14 +316,17 @@ export default function VoiceInterface() {
       const res = await fetch(getApiUrl('/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ message: text, channel: TEXT_CHANNEL }),
+        body: JSON.stringify({
+          message: text,
+          channel: TEXT_CHANNEL,
+          language: selectedLanguage,
+        }),
       })
       if (res.ok) {
         const contentType = res.headers.get('content-type') || ''
         if (contentType.includes('application/json')) {
           const data = await res.json()
           const replyText = typeof data.reply === 'string' ? data.reply.trim() : ''
-          // Filter out LLM error strings that leaked into response
           const isErrorReply = /(llm error|api key|openai|groq|authentication|unauthorized|invalid_api_key)/i.test(replyText)
           if (replyText && !isErrorReply) {
             backendReply = replyText
@@ -325,7 +381,7 @@ export default function VoiceInterface() {
 
   const isConnected = status === 'connected'
   const isConnecting = status === 'connecting'
-  const lastMessage = messages[messages.length - 1]
+  const lastMessage = messages.filter(m => m.role !== 'system').slice(-1)[0]
 
   return (
     <div style={{
@@ -338,77 +394,117 @@ export default function VoiceInterface() {
       padding: '36px 32px 32px',
       position: 'relative',
     }}>
-      {/* Top bar - Status + mode toggle */}
+      {/* Top bar - Status + Language Dropdown + Mode toggle */}
       <div style={{
         width: '100%',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         marginBottom: 8,
+        gap: 10,
       }}>
+        {/* Status pill */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          padding: '6px 18px',
+          padding: '6px 14px',
           background: isConnected ? 'rgba(52,211,153,0.08)' : 'var(--bg-card)',
           border: `1px solid ${isConnected ? 'rgba(52,211,153,0.2)' : 'var(--border)'}`,
           borderRadius: 20,
         }}>
-          <span className={`status-dot status-dot--${isConnected ? 'connected' : status === 'error' ? 'danger' : 'idle'}`} />
+          <span className={`status-dot status-dot--${prismSpeaking ? 'connecting' : isConnected ? 'connected' : status === 'error' ? 'danger' : 'idle'}`} />
           <span style={{
             fontSize: 12,
             fontWeight: 600,
-            color: isConnected ? 'var(--success)' : status === 'error' ? 'var(--danger)' : 'var(--text-secondary)',
+            color: prismSpeaking ? 'var(--accent)' : isConnected ? 'var(--success)' : status === 'error' ? 'var(--danger)' : 'var(--text-secondary)',
             letterSpacing: 0.3,
           }}>
-            {status === 'idle' && 'PRISM • IDLE'}
-            {status === 'connecting' && 'PRISM • CONNECTING...'}
-            {status === 'connected' && 'PRISM • CONNECTED'}
-            {status === 'error' && 'PRISM • ERROR'}
+            {prismSpeaking && 'PRISM • SPEAKING'}
+            {!prismSpeaking && status === 'idle' && 'PRISM • IDLE'}
+            {!prismSpeaking && status === 'connecting' && 'PRISM • CONNECTING...'}
+            {!prismSpeaking && status === 'connected' && 'PRISM • CONNECTED'}
+            {!prismSpeaking && status === 'error' && 'PRISM • ERROR'}
           </span>
         </div>
 
-        {/* Mode toggle */}
-        <div style={{
-          display: 'flex',
-          background: 'var(--bg-card)',
-          borderRadius: 10,
-          padding: 3,
-          border: '1px solid var(--border)',
-        }}>
-          {[
-            { id: 'voice', label: '🎙️' },
-            { id: 'chat', label: '⌨️' },
-          ].map(m => (
-            <button
-              key={m.id}
-              onClick={() => {
-                if (isConnected) return
-                setMode(m.id)
-              }}
-              disabled={isConnected}
-              title={m.id === 'voice' ? 'Voice mode' : 'Chat mode'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* Language selector dropdown */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 10px',
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+          }}>
+            <span style={{ fontSize: 13 }}>🌐</span>
+            <select
+              value={selectedLanguage}
+              onChange={(e) => handleLanguageChange(e.target.value)}
+              disabled={isConnected || isConnecting}
+              aria-label="Select preferred language"
               style={{
-                width: 36,
-                height: 28,
-                padding: 0,
-                borderRadius: 8,
+                background: 'transparent',
                 border: 'none',
-                background: mode === m.id ? 'var(--accent)' : 'transparent',
-                color: mode === m.id ? '#fff' : 'var(--text-secondary)',
-                fontSize: 13,
-                cursor: isConnected ? 'not-allowed' : 'pointer',
-                opacity: isConnected && mode !== m.id ? 0.35 : 1,
-                transition: 'all 0.2s ease',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                color: 'var(--text-primary)',
+                fontSize: 12,
+                fontWeight: 600,
+                outline: 'none',
+                cursor: isConnected || isConnecting ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
               }}
             >
-              {m.label}
-            </button>
-          ))}
+              {Object.entries(LANGUAGES).map(([key, lang]) => (
+                <option key={key} value={key} style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}>
+                  {lang.name} ({lang.locale})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Mode toggle */}
+          <div style={{
+            display: 'flex',
+            background: 'var(--bg-card)',
+            borderRadius: 10,
+            padding: 3,
+            border: '1px solid var(--border)',
+          }}>
+            {[
+              { id: 'voice', label: '🎙️' },
+              { id: 'chat', label: '⌨️' },
+            ].map(m => (
+              <button
+                key={m.id}
+                onClick={() => {
+                  if (isConnected) return
+                  setMode(m.id)
+                }}
+                disabled={isConnected}
+                title={m.id === 'voice' ? 'Voice mode' : 'Chat mode'}
+                style={{
+                  width: 34,
+                  height: 28,
+                  padding: 0,
+                  borderRadius: 8,
+                  border: 'none',
+                  background: mode === m.id ? 'var(--accent)' : 'transparent',
+                  color: mode === m.id ? '#fff' : 'var(--text-secondary)',
+                  fontSize: 13,
+                  cursor: isConnected ? 'not-allowed' : 'pointer',
+                  opacity: isConnected && mode !== m.id ? 0.35 : 1,
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -444,7 +540,7 @@ export default function VoiceInterface() {
               fontWeight: 400,
               letterSpacing: 0.5,
             }}>
-              Multilingual AI Assistant
+              Multilingual AI Support Engine
             </div>
           </div>
 
@@ -467,11 +563,11 @@ export default function VoiceInterface() {
                   width: 8,
                   height: 8,
                   borderRadius: '50%',
-                  background: agentActive ? 'var(--accent)' : 'var(--success)',
-                  boxShadow: agentActive ? '0 0 12px var(--accent-glow)' : '0 0 8px var(--success-glow)',
+                  background: prismSpeaking ? 'var(--accent)' : agentActive ? 'var(--accent)' : 'var(--success)',
+                  boxShadow: prismSpeaking ? '0 0 12px var(--accent-glow)' : agentActive ? '0 0 12px var(--accent-glow)' : '0 0 8px var(--success-glow)',
                 }} />
                 <span style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
-                  {agentActive ? 'PRISM speaking...' : 'Listening...'}
+                  {prismSpeaking ? 'PRISM speaking greeting...' : agentActive ? 'PRISM speaking...' : 'Listening...'}
                 </span>
               </div>
 
@@ -517,66 +613,69 @@ export default function VoiceInterface() {
               gap: 20,
             }}>
               {/* Mic orb */}
-              <div className={isConnected ? 'pulse-ring' : ''} style={{
-                width: 120,
-                height: 120,
+              <div className={isConnected || prismSpeaking ? 'pulse-ring' : ''} style={{
+                width: 140,
+                height: 140,
                 borderRadius: '50%',
+                background: isConnected || prismSpeaking ? 'var(--gradient-accent)' : 'var(--bg-elevated)',
+                border: `2px solid ${isConnected || prismSpeaking ? 'var(--border-accent)' : 'var(--border-strong)'}`,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: isConnected
-                  ? 'radial-gradient(circle, var(--accent-glow) 0%, rgba(124,111,255,0.05) 70%)'
-                  : 'var(--bg-card)',
-                border: `2px solid ${isConnected ? 'var(--accent)' : 'var(--border-strong)'}`,
-                transition: 'all 0.4s ease',
-              }}>
+                boxShadow: isConnected || prismSpeaking
+                  ? '0 0 60px var(--accent-glow-strong), inset 0 0 30px rgba(255,255,255,0.1)'
+                  : '0 8px 32px rgba(0,0,0,0.3)',
+                transition: 'all 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
+                cursor: isConnecting ? 'not-allowed' : 'pointer',
+              }}
+              onClick={isConnected ? disconnect : connect}
+              >
                 <div style={{
-                  width: 64,
-                  height: 64,
-                  borderRadius: '50%',
-                  background: isConnected ? 'var(--gradient-accent)' : 'var(--bg-elevated)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 28,
-                  opacity: isConnecting ? 0.5 : 1,
+                  fontSize: 48,
+                  filter: isConnected || prismSpeaking ? 'drop-shadow(0 2px 8px rgba(0,0,0,0.3))' : 'none',
+                  transition: 'transform 0.3s ease',
                 }}>
-                  {isConnecting ? '⟳' : isConnected ? '◉' : '◯'}
+                  {status === 'connecting' ? '⏳' : isConnected ? '🎙️' : '🎙️'}
                 </div>
               </div>
 
-              {isConnected && (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>
-                    Listening...
-                  </span>
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'flex-end',
-                    gap: 2,
-                    height: 32,
-                  }}>
-                    {waveformBars.map((h, i) => (
-                      <div key={i} style={{
-                        width: 3,
-                        height: `${Math.max(4, h * 32)}px`,
-                        borderRadius: 2,
-                        background: 'linear-gradient(180deg, var(--accent) 0%, var(--accent-soft) 100%)',
-                        opacity: 0.6 + h * 0.4,
-                        transition: 'height 0.12s ease',
-                      }} />
-                    ))}
-                  </div>
-                  <div style={{
-                    fontSize: 14,
-                    color: 'var(--text-secondary)',
-                    fontStyle: 'italic',
-                    opacity: 0.7,
-                  }}>
-                    "Tell me what happened."
-                  </div>
-                </div>
-              )}
+              {/* Status text */}
+              <div style={{
+                fontSize: 13,
+                color: isConnected ? 'var(--success)' : 'var(--text-muted)',
+                fontWeight: 500,
+                letterSpacing: 0.5,
+              }}>
+                {prismSpeaking && 'PRISM ● Speaking initial greeting...'}
+                {!prismSpeaking && status === 'idle' && 'Click microphone to connect'}
+                {!prismSpeaking && status === 'connecting' && 'Establishing secure connection...'}
+                {!prismSpeaking && status === 'connected' && 'PRISM is listening — speak naturally'}
+                {!prismSpeaking && status === 'error' && 'Connection error — click to retry'}
+              </div>
+
+              {/* Realtime Waveform bars */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                height: 36,
+              }}>
+                {waveformBars.map((height, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      width: 3,
+                      height: `${Math.max(15, height * 100)}%`,
+                      background: isConnected || prismSpeaking
+                        ? `linear-gradient(180deg, var(--accent) 0%, var(--accent-soft) 100%)`
+                        : 'var(--border-strong)',
+                      borderRadius: 2,
+                      transition: 'height 0.12s ease',
+                      opacity: isConnected || prismSpeaking ? 0.4 + height * 0.6 : 0.3,
+                    }}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -587,45 +686,97 @@ export default function VoiceInterface() {
         <div style={{
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
-          flex: 1,
           width: '100%',
+          flex: 1,
+          gap: 16,
           minHeight: 0,
         }}>
-          {/* Logo (smaller) */}
-          <div style={{ textAlign: 'center', userSelect: 'none', padding: '4px 0 0' }}>
-            <div style={{
-              fontSize: 32,
-              fontWeight: 800,
-              letterSpacing: -1.5,
-              background: 'var(--gradient-accent)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text',
-              lineHeight: 1,
-            }}>
-              PRISM
+          {/* Header */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingBottom: 12,
+            borderBottom: '1px solid var(--border)',
+          }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                Text Support Chat
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Direct text interface with PRISM engine
+              </div>
             </div>
-            <div style={{
-              fontSize: 11,
-              color: 'var(--text-secondary)',
-              marginTop: 6,
-              fontWeight: 400,
-              letterSpacing: 0.5,
-            }}>
-              Type in Hindi, English, or Hinglish
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              {!demoMode && (
+                <button
+                  onClick={() => setDemoMode(true)}
+                  style={{
+                    padding: '5px 10px',
+                    fontSize: 10,
+                    fontWeight: 600,
+                    borderRadius: 6,
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-elevated)',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Enable Demo Mode
+                </button>
+              )}
             </div>
           </div>
 
-          {/* Message area */}
-          <div className="glass-panel" style={{
+          {/* Quick phrase chips */}
+          <div style={{
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+          }}>
+            {QUICK_PHRASES.map(phrase => (
+              <button
+                key={phrase}
+                onClick={() => {
+                  if (!isConnected) connect()
+                  sendChatMessage(phrase)
+                }}
+                style={{
+                  padding: '5px 10px',
+                  borderRadius: 16,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-secondary)',
+                  fontSize: 11,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  whiteSpace: 'nowrap',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border-accent)'
+                  e.currentTarget.style.color = 'var(--accent-soft)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border)'
+                  e.currentTarget.style.color = 'var(--text-secondary)'
+                }}
+              >
+                {phrase}
+              </button>
+            ))}
+          </div>
+
+          {/* Messages list */}
+          <div style={{
             flex: 1,
-            minHeight: 340,
-            padding: '16px 16px 8px',
+            overflowY: 'auto',
             display: 'flex',
             flexDirection: 'column',
             gap: 12,
-            overflowY: 'auto',
+            paddingRight: 4,
+            minHeight: 280,
+            maxHeight: 380,
           }}>
             {!isConnected ? (
               <div style={{
@@ -657,10 +808,10 @@ export default function VoiceInterface() {
                 <div style={{
                   fontSize: 11,
                   textAlign: 'center',
-                  maxWidth: 260,
+                  maxWidth: 280,
                   lineHeight: 1.6,
                 }}>
-                  PRISM understands natural Hindi, English, and Hinglish — no language selection needed.
+                  PRISM supports all 22 Eighth Schedule Indian languages + English. Select your preferred language above.
                 </div>
               </div>
             ) : (
@@ -713,89 +864,38 @@ export default function VoiceInterface() {
                     )}
                   </div>
                 ))}
-
                 {chatSending && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-                    <div style={{
-                      padding: '10px 16px',
-                      background: 'var(--bg-elevated)',
-                      borderRadius: '14px 14px 14px 4px',
-                      border: '1px solid var(--border)',
-                      fontSize: 18,
-                      color: 'var(--text-secondary)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      height: 40,
-                    }}>
-                      <span className="typing-dots">
-                        <span /><span /><span />
-                      </span>
-                    </div>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 12,
+                    color: 'var(--text-muted)',
+                  }}>
+                    <span className="status-dot status-dot--connecting" />
+                    PRISM is thinking...
                   </div>
                 )}
                 <div ref={chatEndRef} />
               </>
             )}
           </div>
-
-          {/* Quick phrases */}
-          {isConnected && (
-            <div style={{
-              display: 'flex',
-              gap: 6,
-              flexWrap: 'wrap',
-            }}>
-              {QUICK_PHRASES.map(phrase => (
-                <button
-                  key={phrase}
-                  onClick={() => setChatInput(phrase)}
-                  style={{
-                    padding: '5px 12px',
-                    borderRadius: 20,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--text-secondary)',
-                    fontSize: 11,
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    transition: 'all 0.2s ease',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'var(--bg-elevated)'
-                    e.currentTarget.style.color = 'var(--text-primary)'
-                    e.currentTarget.style.borderColor = 'var(--border-strong)'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'var(--bg-card)'
-                    e.currentTarget.style.color = 'var(--text-secondary)'
-                    e.currentTarget.style.borderColor = 'var(--border)'
-                  }}
-                >
-                  {phrase}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
-      {/* Bottom section */}
+      {/* Bottom controls & escalation banner */}
       <div style={{
+        width: '100%',
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center',
-        gap: 20,
-        width: '100%',
-        marginTop: mode === 'chat' ? 0 : 0,
+        gap: 12,
+        marginTop: 16,
       }}>
         {/* Escalation banner */}
         {escalated && (
           <div className="slide-up" style={{
-            width: '100%',
-            padding: '14px 20px',
-            background: takenOver
-              ? 'linear-gradient(135deg, rgba(52,211,153,0.12) 0%, rgba(52,211,153,0.04) 100%)'
-              : 'linear-gradient(135deg, rgba(248,113,113,0.12) 0%, rgba(248,113,113,0.04) 100%)',
+            padding: '12px 16px',
+            background: takenOver ? 'rgba(52,211,153,0.08)' : 'rgba(248,113,113,0.08)',
             border: takenOver
               ? '1px solid rgba(52,211,153,0.3)'
               : '1px solid rgba(248,113,113,0.3)',
@@ -879,7 +979,7 @@ export default function VoiceInterface() {
               onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border)'}
             />
             <button
-              onClick={sendChatMessage}
+              onClick={() => sendChatMessage()}
               disabled={!chatInput.trim() || chatSending}
               aria-label="Send message"
               style={{
@@ -945,7 +1045,7 @@ export default function VoiceInterface() {
           >
             <span style={{ fontSize: 20 }}>🎙️</span>
             <span>
-              {status === 'idle' && 'Hold to speak / Speak naturally'}
+              {status === 'idle' && 'Click to Speak / Connect'}
               {status === 'connecting' && 'Connecting to PRISM...'}
               {status === 'connected' && 'End conversation'}
               {status === 'error' && 'Try again'}
@@ -995,23 +1095,12 @@ export default function VoiceInterface() {
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 12,
+          justifyContent: 'center',
+          gap: 6,
         }}>
-          {['Hindi', 'English', 'Hinglish'].map((lang, i, arr) => (
-            <span key={lang} style={{
-              fontSize: 12,
-              color: 'var(--text-muted)',
-              fontWeight: 500,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-            }}>
-              {lang}
-              {i < arr.length - 1 && (
-                <span style={{ color: 'var(--border-strong)' }}>•</span>
-              )}
-            </span>
-          ))}
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>
+            Supports 22 Eighth Schedule Indian Languages + English
+          </span>
         </div>
 
         {demoMode && isConnected && (

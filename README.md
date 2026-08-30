@@ -320,41 +320,27 @@ The goal is to eliminate the classic support experience:
 
 🌐 Multilingual Voice Experience
 
-PRISM is being designed as a multilingual, voice-first support interface, particularly suited for India's diverse language landscape.
+PRISM includes a centralized language configuration containing all 22 languages listed in the Eighth Schedule of the Indian Constitution, plus English.
 
-The caller can select their preferred language before starting the conversation.
+The caller can select their preferred language before starting the conversation:
+Assamese, Bengali, Bodo, Dogri, English, Gujarati, Hindi, Kannada, Kashmiri, Konkani, Maithili, Malayalam, Manipuri, Marathi, Nepali, Odia, Punjabi, Sanskrit, Santali, Sindhi, Tamil, Telugu, and Urdu.
 
-Currently supported languages include:
+The initial PRISM greeting is delivered in the selected language using the browser's native Speech Synthesis API (`window.speechSynthesis`).
 
-English
-Hindi
-Bengali
-Telugu
-Marathi
-Tamil
-Gujarati
-Kannada
-Malayalam
-Punjabi
-Odia
-Assamese
-Urdu
-Nepali
-Sanskrit
+Key onboarding characteristics:
+- **Dynamic Voice Detection**: Uses `speechSynthesis.getVoices()` to dynamically select the best matching voice for the locale.
+- **Graceful Fallback**: If a specific locale voice is missing, the system gracefully falls back without blocking the voice session.
+- **Non-Blocking Execution**: Greeting plays on initial voice orb click without delaying Agora audio connection.
+- **Strict Cancellation**: Speech synthesis is automatically cancelled on session disconnect, language change, or component unmount.
+- **Case Context Propagation**: The selected language enters the active session state, FastAPI case context, and is exposed directly on the Agent Dashboard.
 
-The initial PRISM greeting is delivered in the selected language using the browser's native Speech Synthesis API.
+Example greetings:
 
-Example:
-
-English
-
+English:
 "Hello, this is PRISM, your AI support assistant. Please describe your problem, and I'll help you resolve it."
 
-Hindi
-
+Hindi:
 "नमस्ते, मैं PRISM हूँ, आपका AI सहायता सहायक। कृपया अपनी समस्या बताइए, मैं उसे हल करने में आपकी मदद करूंगा।"
-
-The greeting is triggered by deliberate user interaction rather than automatically playing when the page loads.
 
 🔐 Agora Security
 
@@ -644,8 +630,6 @@ Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
 
 Backend environment variables:
 
-PORT=8001
-
 FRONTEND_URL=https://YOUR-VERCEL-APP.vercel.app
 BACKEND_PUBLIC_URL=https://YOUR-RENDER-BACKEND.onrender.com
 
@@ -698,6 +682,9 @@ Response:
   "status": "ok",
   "service": "prism-backend"
 }
+
+> [!NOTE]
+> For Render free-tier/demo deployments, an external uptime monitor can periodically request `/health` to reduce inactivity-related sleeping. Production deployments should use an appropriate always-on service tier.
 
 An external HTTP monitoring service can periodically request:
 

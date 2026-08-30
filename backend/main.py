@@ -53,6 +53,7 @@ active_sessions: dict[str, str] = {}
 class SessionStartRequest(BaseModel):
     channel: str
     user_uid: int
+    language: Optional[str] = None
 
 class SessionStopRequest(BaseModel):
     agent_id: str
@@ -61,6 +62,7 @@ class SessionStopRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     channel: str = "prism-text"
+    language: Optional[str] = None
 
 
 # ── /health ───────────────────────────────────────────────────────────
@@ -158,7 +160,9 @@ async def start_session(req: SessionStartRequest):
     llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     # Ensure case state exists for this channel
     from context import get_or_create_case
-    get_or_create_case(req.channel)
+    case = get_or_create_case(req.channel)
+    if req.language and req.language not in case.language:
+        case.language.append(req.language)
 
     if not app_id or not customer_id or not customer_secret:
         mock_id = f"demo-agent-{uuid.uuid4().hex[:8]}"
@@ -773,6 +777,8 @@ async def chat(req: ChatRequest):
 
     channel = req.channel
     case = get_or_create_case(channel)
+    if req.language and req.language not in case.language:
+        case.language.append(req.language)
 
     case.last_user_text = req.message
 
