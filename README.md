@@ -77,7 +77,7 @@ Customers can also interact through text chat.
 
 🌐 Multilingual Support
 
-Customers can select their preferred language before starting a conversation, with support for major Indian languages.
+Customers can select their preferred language before starting a conversation. The current MVP supports Hindi, English, and Hinglish (natural Hindi–English code-switching).
 
 🧠 AI Conversation
 
@@ -320,10 +320,9 @@ The goal is to eliminate the classic support experience:
 
 🌐 Multilingual Voice Experience
 
-PRISM includes a centralized language configuration containing all 22 languages listed in the Eighth Schedule of the Indian Constitution, plus English.
+PRISM ships with a centralized language configuration. The current MVP supports **Hindi, English, and Hinglish** (natural Hindi–English code-switching), which covers the primary Indian customer-support use case. The configuration is structured so additional languages can be added later without changing the conversation engine.
 
-The caller can select their preferred language before starting the conversation:
-Assamese, Bengali, Bodo, Dogri, English, Gujarati, Hindi, Kannada, Kashmiri, Konkani, Maithili, Malayalam, Manipuri, Marathi, Nepali, Odia, Punjabi, Sanskrit, Santali, Sindhi, Tamil, Telugu, and Urdu.
+The caller selects their preferred language — Hindi or English — before starting the conversation. Hinglish is understood automatically within either selection.
 
 The initial PRISM greeting is delivered in the selected language using the browser's native Speech Synthesis API (`window.speechSynthesis`).
 

@@ -33,6 +33,12 @@ class CaseState:
     conversation_history: list = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     last_user_text: Optional[str] = None
+    # ── Policy gate + activity tracking ──────────────────────────────────
+    escalation_proposed: bool = False           # LLM proposed escalate_to_human this turn
+    proposed_escalation_reason: Optional[str] = None
+    policy_decision: Optional[str] = None        # "ESCALATE" / "CONTINUE" (last gate result)
+    policy_reason: Optional[str] = None
+    last_activity_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
     def to_prompt_summary(self) -> str:
         known = []

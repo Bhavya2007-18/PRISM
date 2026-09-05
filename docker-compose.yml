@@ -1,27 +1,41 @@
-version: '3.8'
+# PRISM local dev stack.
+#
+# No Dockerfiles required — this uses the official base images and installs
+# dependencies on start. Before running, copy the env template:
+#   cp .env.example .env
+# Then:  docker compose up
+#
+# Backend runs on :8001 (matches BACKEND_PUBLIC_URL default and the Vite dev
+# proxy); the Vite frontend runs on :5173.
 
 services:
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: python:3.11-slim
+    working_dir: /app
     ports:
-      - "8000:8000"
+      - "8001:8001"
     env_file:
       - .env
+    environment:
+      - PORT=8001
     volumes:
-      - ./backend:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      - ./:/app
+    command: >
+      bash -c "pip install --upgrade pip &&
+               pip install --prefer-binary -r requirements.txt &&
+               uvicorn backend.main:app --host 0.0.0.0 --port 8001 --reload"
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: node:20-alpine
+    working_dir: /app
+    depends_on:
+      - backend
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      # Reached from the browser via the published host port.
+      - VITE_API_URL=http://localhost:8001
     volumes:
       - ./frontend:/app
       - /app/node_modules
-    command: npm run dev -- --host
+    command: sh -c "npm install && npm run dev -- --host --port 5173"

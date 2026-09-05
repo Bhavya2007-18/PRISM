@@ -2,332 +2,176 @@ import { useState } from 'react'
 import { getApiUrl } from '../lib/api'
 
 export default function EscalationPanel({ caseData, onTakeOver, compact = false }) {
-  const [loading, setLoading] = useState(false)
-  const [localTakenOver, setLocalTakenOver] = useState(
-    caseData?.taken_over || caseData?.status === 'TAKEN_OVER'
-  )
-
+  const [taking, setTaking] = useState(false)
+  const [taken, setTaken] = useState(caseData?.taken_over || caseData?.status === 'TAKEN_OVER')
   if (!caseData) return null
 
-  const takenOver = localTakenOver || caseData.taken_over || caseData.status === 'TAKEN_OVER'
-  const confidence = typeof caseData.confidence_display === 'number' ? caseData.confidence_display : 41
-  const confColor = confidence >= 70 ? 'var(--success)' : confidence >= 40 ? 'var(--warning)' : 'var(--danger)'
+  const conf = caseData.confidence_display ?? 0
+  const cc = conf >= 70 ? 'var(--ok)' : conf >= 40 ? 'var(--warn)' : 'var(--danger)'
 
   async function handleTakeOver() {
-    if (takenOver || loading) return
-    setLoading(true)
+    if (taken || taking) return
+    setTaking(true)
     try {
-      const res = await fetch(getApiUrl(`/cases/${caseData.case_id}/takeover`), { method: 'POST' })
-      if (res.ok) {
-        setLocalTakenOver(true)
-        onTakeOver?.(caseData.case_id)
-      } else {
-        setLocalTakenOver(true)
-        onTakeOver?.(caseData.case_id)
-      }
-    } catch (e) {
-      setLocalTakenOver(true)
+      await fetch(getApiUrl(`/cases/${caseData.case_id}/takeover`), { method: 'POST' })
+      setTaken(true)
       onTakeOver?.(caseData.case_id)
-    }
-    setLoading(false)
+    } catch (e) { console.error(e) }
+    setTaking(false)
   }
+
+  const vi = []
+  if (caseData.transaction_id) vi.push({ label: 'Transaction', value: caseData.transaction_id })
+  if (caseData.amount != null)  vi.push({ label: 'Amount', value: `₹${caseData.amount}` })
+  if (caseData.payment_status) vi.push({ label: 'Payment', value: caseData.payment_status })
+  if (caseData.order_status)   vi.push({ label: 'Order', value: caseData.order_status })
+  const ui = caseData.unverified || []
 
   if (compact) {
     return (
       <div
-        className={takenOver ? 'glass-panel' : 'glass-panel-danger'}
+        className="card"
         style={{
-          padding: '18px 20px',
-          opacity: takenOver ? 0.7 : 1,
+          padding: '14px 16px',
+          background: taken ? 'var(--ok-bg)' : 'var(--danger-bg)',
+          border: `1px solid ${taken ? 'var(--ok-border)' : 'var(--danger-border)'}`,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+          transition: 'background 0.4s ease',
         }}
       >
-        {!takenOver && (
-          <div className="slide-up" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-            }}>
-              <span style={{ fontSize: 16 }}>🔴</span>
-              <div>
-                <div style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  letterSpacing: 2,
-                  color: 'var(--danger)',
-                  textTransform: 'uppercase',
-                }}>
-                  HUMAN ASSISTANCE REQUIRED
-                </div>
-                <div style={{
-                  fontSize: 11,
-                  color: 'var(--text-muted)',
-                  marginTop: 2,
-                }}>
-                  PRISM confidence: <span style={{ color: confColor, fontWeight: 700 }}>{confidence}%</span>
-                </div>
-              </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: taken ? 'var(--ok)' : 'var(--danger)', letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 2 }}>
+              {taken ? 'Resolved' : 'Human required'}
             </div>
-
-            <div>
-              <div className="label-text" style={{ fontSize: 9, marginBottom: 4 }}>Reason</div>
-              <p style={{
-                fontSize: 12,
-                color: 'var(--text-secondary)',
-                lineHeight: 1.6,
-                margin: 0,
-              }}>
-                {caseData.reason_for_escalation || 'Unable to confidently determine whether the customer was charged twice.'}
-              </p>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              {caseData.issue || caseData.intent || 'Escalated case'}
             </div>
-
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr 1fr',
-              gap: 8,
-              padding: '10px 12px',
-              background: 'rgba(52,211,153,0.04)',
-              border: '1px solid rgba(52,211,153,0.15)',
-              borderRadius: 8,
-            }}>
-              {[
-                { label: 'Context', icon: '✓' },
-                { label: 'Summary', icon: '✓' },
-                { label: 'Verified', icon: '✓' },
-              ].map(item => (
-                <div key={item.label} style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  justifyContent: 'center',
-                }}>
-                  <span style={{ fontSize: 10, color: 'var(--success)' }}>{item.icon}</span>
-                  <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{item.label}</span>
-                </div>
-              ))}
-            </div>
-
-            <button
-              onClick={handleTakeOver}
-              disabled={loading}
-              className="btn-danger"
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-              }}
-            >
-              <span>🎧</span>
-              {loading ? 'Taking over...' : 'TAKE OVER CONVERSATION'}
-            </button>
           </div>
+          <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
+            {caseData.case_id}
+          </span>
+        </div>
+        {caseData.reason_for_escalation && (
+          <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+            {caseData.reason_for_escalation}
+          </p>
         )}
-
-        {takenOver && (
-          <div className="fade-in" style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 10,
-          }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-            }}>
-              <span style={{ fontSize: 16 }}>🔵</span>
-              <div>
-                <div style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  letterSpacing: 2,
-                  color: 'var(--info)',
-                  textTransform: 'uppercase',
-                }}>
-                  HUMAN AGENT CONNECTED
-                </div>
-              </div>
-            </div>
-            <p style={{
-              fontSize: 12,
-              color: 'var(--text-secondary)',
-              textAlign: 'center',
-              margin: 0,
-              lineHeight: 1.6,
-            }}>
-              PRISM has transferred the conversation. Context has been preserved.
-            </p>
-          </div>
+        {!taken && (
+          <button onClick={handleTakeOver} disabled={taking} className="btn btn--primary btn--sm" style={{ alignSelf: 'flex-end' }}>
+            {taking ? 'Connecting…' : 'Take over conversation'}
+          </button>
+        )}
+        {taken && (
+          <div style={{ fontSize: 12, color: 'var(--ok)', fontWeight: 500 }}>✓ Human agent connected</div>
         )}
       </div>
     )
   }
 
   return (
-    <div
-      className={takenOver ? 'glass-panel' : 'glass-panel-danger'}
-      style={{
-        padding: '24px 28px',
-        opacity: takenOver ? 0.7 : 1,
-      }}
-    >
-      {!takenOver && (
-        <div className="slide-up" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-          {/* Header */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-            }}>
-              <span style={{ fontSize: 20 }}>🔴</span>
-              <div>
-                <div style={{
-                  fontSize: 13,
-                  fontWeight: 700,
-                  letterSpacing: 2,
-                  color: 'var(--danger)',
-                  textTransform: 'uppercase',
-                }}>
-                  HUMAN ASSISTANCE REQUIRED
-                </div>
-                <div style={{
-                  fontSize: 12,
-                  color: 'var(--text-muted)',
-                  marginTop: 4,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  flexWrap: 'wrap',
-                }}>
-                  <span>PRISM confidence: <strong style={{ color: confColor, fontSize: 14 }}>{confidence}%</strong></span>
-                  <span style={{
-                    fontSize: 11,
-                    padding: '2px 10px',
-                    borderRadius: 12,
-                    background: 'rgba(124,111,255,0.15)',
-                    color: 'var(--accent-soft)',
-                    fontWeight: 600,
-                    border: '1px solid var(--border-accent)',
-                  }}>
-                    🌐 Language: {(caseData.language?.length ? caseData.language.join(', ') : 'Hindi')}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <span className="monospace" style={{
-              fontSize: 12,
-              color: 'var(--text-muted)',
-            }}>
-              {caseData.case_id}
-            </span>
-          </div>
+    <div style={{ background: 'var(--surface-0)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)', overflow: 'hidden', transition: 'border-color 0.3s ease' }}>
+      {/* Header */}
+      <div style={{
+        padding: '13px 20px',
+        background: taken ? 'var(--surface-1)' : 'var(--danger-bg)',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        transition: 'background 0.4s ease',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', display: 'inline-block', background: taken ? 'var(--ok)' : 'var(--danger)', flexShrink: 0 }} />
+          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: taken ? 'var(--text-tertiary)' : 'var(--danger)' }}>
+            {taken ? 'Resolved' : 'Escalation'}
+          </span>
+        </div>
+        <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
+          {caseData.case_id}
+        </span>
+      </div>
 
-          {/* Reason */}
+      {/* Body grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+        {/* Left column */}
+        <div style={{ padding: '16px 20px', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <div className="label-text">Reason</div>
-            <p style={{
-              fontSize: 14,
-              color: 'var(--text-primary)',
-              lineHeight: 1.7,
-              margin: '8px 0 0 0',
-              fontWeight: 500,
-            }}>
-              {caseData.reason_for_escalation || 'Unable to confidently determine whether the customer was charged twice.'}
-            </p>
+            <div className="t-label" style={{ color: 'var(--text-muted)', marginBottom: 5 }}>Issue</div>
+            <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.3 }}>{caseData.issue || 'Payment issue'}</div>
           </div>
-
-          {/* Context preserved */}
-          <div style={{
-            display: 'flex',
-            gap: 12,
-            padding: '14px 18px',
-            background: 'rgba(52,211,153,0.05)',
-            border: '1px solid rgba(52,211,153,0.2)',
-            borderRadius: 12,
-          }}>
-            {[
-              { label: 'Context preserved', icon: '✓' },
-              { label: 'Conversation summary', icon: '✓' },
-              { label: 'Transaction verified', icon: '✓' },
-            ].map(item => (
-              <div key={item.label} style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                flex: 1,
-                justifyContent: 'center',
-              }}>
-                <span style={{ color: 'var(--success)', fontSize: 12 }}>{item.icon}</span>
-                <span style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>{item.label}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Take over button */}
-          <button
-            onClick={handleTakeOver}
-            disabled={loading}
-            className="btn-danger"
-            style={{
-              padding: '16px 32px',
-              fontSize: 14,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-            }}
-          >
-            <span style={{ fontSize: 18 }}>🎧</span>
-            {loading ? 'Taking over conversation...' : 'TAKE OVER CONVERSATION'}
-          </button>
-        </div>
-      )}
-
-      {takenOver && (
-        <div className="fade-in" style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 16,
-          padding: '20px 0',
-        }}>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 14,
-          }}>
-            <span style={{ fontSize: 24 }}>🔵</span>
-            <div>
-              <div style={{
-                fontSize: 13,
-                fontWeight: 700,
-                letterSpacing: 2,
-                color: 'var(--info)',
-                textTransform: 'uppercase',
-              }}>
-                HUMAN AGENT CONNECTED
-              </div>
+          <div>
+            <div className="t-label" style={{ color: 'var(--text-muted)', marginBottom: 6 }}>Language</div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+              {(caseData.language?.length ? caseData.language : ['Unknown']).map(l => (
+                <span key={l} style={{ padding: '2px 9px', borderRadius: 'var(--r-full)', background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                  {l}
+                </span>
+              ))}
             </div>
           </div>
-          <p style={{
-            fontSize: 14,
-            color: 'var(--text-secondary)',
-            textAlign: 'center',
-            margin: 0,
-            lineHeight: 1.7,
-            maxWidth: 420,
-          }}>
-            PRISM has transferred the conversation. Context has been preserved. The user shouldn't have to repeat anything.
-          </p>
+          {vi.length > 0 && (
+            <div>
+              <div className="t-label" style={{ color: 'var(--text-muted)', marginBottom: 6 }}>Verified</div>
+              {vi.map(item => (
+                <div key={item.label} className="tx-row" style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', gap: 8, borderBottom: 'none' }}>
+                  <span style={{ fontSize: 12, color: 'var(--ok)' }}>&#x2713; {item.label}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>{item.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {ui.length > 0 && (
+            <div>
+              <div className="t-label" style={{ color: 'var(--text-muted)', marginBottom: 6 }}>Uncertain</div>
+              {ui.map(f => (
+                <div key={f} style={{ fontSize: 12, color: 'var(--warn)', padding: '2px 0' }}>&ndash; {f.replace(/_/g, ' ')}</div>
+              ))}
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Right column */}
+        <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <span className="t-label" style={{ color: 'var(--text-muted)' }}>Confidence</span>
+              <span style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.03em', color: cc }}>{conf}%</span>
+            </div>
+            <div className="progress" style={{ marginBottom: 6 }}>
+              <div
+                className={`progress__fill progress__fill--${conf >= 70 ? 'ok' : conf >= 40 ? 'warn' : 'danger'}`}
+                style={{ width: `${conf}%` }}
+              />
+            </div>
+            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: cc }}>
+              {caseData.confidence_label || 'Uncertain'}
+            </div>
+          </div>
+          {caseData.summary && (
+            <div>
+              <div className="t-label" style={{ color: 'var(--text-muted)', marginBottom: 5 }}>Summary</div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.55 }}>{caseData.summary}</p>
+            </div>
+          )}
+          {caseData.reason_for_escalation && (
+            <div>
+              <div className="t-label" style={{ color: 'var(--danger)', marginBottom: 5 }}>Reason</div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>{caseData.reason_for_escalation}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, background: 'var(--surface-1)' }}>
+        {taken && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Handled by human agent</span>}
+        <button onClick={handleTakeOver} disabled={taken || taking} className="btn btn--primary btn--sm">
+          {taking ? 'Connecting…' : taken ? '✓ Taken over' : 'Take over conversation'}
+        </button>
+      </div>
     </div>
   )
 }

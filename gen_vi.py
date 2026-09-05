@@ -1,12 +1,13 @@
+﻿import pathlib
+
+JSX = r"""
 import { useState, useRef, useEffect } from 'react'
 import AgoraRTC from 'agora-rtc-sdk-ng'
 import { getApiUrl } from '../lib/api'
 import { LANGUAGES, DEFAULT_LANGUAGE, getLanguageConfig } from '../config/languages'
 import { ttsManager } from '../lib/tts'
+import ThinkingPanel from './ThinkingPanel'
 import { PRISM_STATE_CONFIG } from '../config/prismState'
-import VoiceOrb from './VoiceOrb'
-import TranscriptConsole from './TranscriptConsole'
-import IntelligencePanel from './IntelligencePanel'
 
 const CHANNEL = 'prism-demo'
 const TEXT_CHANNEL = 'prism-text'
@@ -303,12 +304,17 @@ export default function VoiceInterface() {
             <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:6 }}>Multilingual AI Support</div>
           </div>
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:16 }}>
-            <VoiceOrb
-              state={voiceState}
-              onClick={isConnected ? disconnect : connect}
-              size={140}
-              audioLevel={waveformBars.reduce((a,b) => a+b, 0) / waveformBars.length}
-            />
+            <div className={orbClass} style={{ width:120, height:120 }} onClick={isConnected ? disconnect : connect} role="button" aria-label={isConnected?'Disconnect':'Connect'}>
+              <span style={{ fontSize:20, color:'var(--text-secondary)', userSelect:'none' }}>
+                {voiceState==='IDLE'&&'\uD83C\uDFA4'}
+                {voiceState==='LISTENING'&&'\u25CF'}
+                {voiceState==='THINKING'&&'\u25CB'}
+                {voiceState==='ACTING'&&'\u2192'}
+                {voiceState==='SPEAKING'&&'\u25C9'}
+                {voiceState==='ESCALATING'&&'!'}
+                {voiceState==='HUMAN_CONNECTED'&&'\u2713'}
+              </span>
+            </div>
             <div className="waveform">
               {waveformBars.map((h,i) => (
                 <div key={i} className={'waveform__bar' + (isConnected?' waveform__bar--active':'')} style={{ height: Math.max(3,h*100)+'%' }} />
@@ -352,12 +358,33 @@ export default function VoiceInterface() {
                 <div style={{ fontSize:11, color:'var(--text-muted)', maxWidth:240, lineHeight:1.6 }}>Hindi, English, and Hinglish supported</div>
               </div>
             ) : (
-              <TranscriptConsole messages={messages} />
+              <div className="transcript">
+                {messages.map((msg,i) => {
+                  if (msg.role==='system') return (
+                    <div key={i} className="fade-in" style={{ padding:'8px 12px', background:'var(--danger-bg)', border:'1px solid var(--danger-border)', borderRadius:'var(--r-md)', fontSize:12, color:'var(--danger)', textAlign:'center', marginBottom:8 }}>
+                      {msg.content}
+                    </div>
+                  )
+                  return (
+                    <div key={i} className={'transcript-line transcript-line--' + (msg.role==='user'?'user':'agent') + (i===messages.length-1?' fade-in':'')}>
+                      <div className="transcript-line__meta">{msg.role==='user'?<span>YOU</span>:<span>PRISM</span>}</div>
+                      <div className="transcript-line__bubble">{msg.content}</div>
+                    </div>
+                  )
+                })}
+                {chatSending && (
+                  <div style={{ display:'flex', alignItems:'center', gap:8, padding:'4px 0' }}>
+                    <span className="status-dot status-dot--muted status-dot--pulse" />
+                    <span style={{ fontSize:12, color:'var(--text-muted)' }}>Thinking...</span>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
             )}
           </div>
           {isConnected && voiceState !== 'IDLE' && (
             <div style={{ borderTop:'1px solid var(--border-subtle)', maxHeight:220, overflowY:'auto' }}>
-              <IntelligencePanel voiceState={voiceState} aiState={aiState} compact />
+              <ThinkingPanel voiceState={voiceState} aiState={aiState} compact />
             </div>
           )}
         </div>
@@ -415,3 +442,8 @@ export default function VoiceInterface() {
     </div>
   )
 }
+""".strip()
+
+import pathlib
+pathlib.Path(r'd:/WORK AND STUDY/PRISM/frontend/src/components/VoiceInterface.jsx').write_text(JSX, encoding='utf-8')
+print('VoiceInterface.jsx written', len(JSX), 'chars')

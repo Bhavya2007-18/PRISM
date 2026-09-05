@@ -1,11 +1,18 @@
+﻿import pathlib
+
+base = pathlib.Path(r'd:/WORK AND STUDY/PRISM/frontend/src')
+
+files = {}
+
+files['components/CasePanel.jsx'] = r"""
 export default function CasePanel({ caseData }) {
   if (!caseData) return <div style={{padding:'32px 0',textAlign:'center',color:'var(--text-muted)',fontSize:13}}>No case selected</div>
   const conf = typeof caseData.confidence_display === 'number' ? caseData.confidence_display : null
   const cc = conf==null?'var(--text-muted)':conf>=70?'var(--ok)':conf>=40?'var(--warn)':'var(--danger)'
   const Row = ({label,value,mono,color}) => value==null?null:(
-    <div className="tx-row" style={{animationName:'none',padding:'7px 0'}}>
-      <span className="tx-meta" style={{fontWeight:500,color:'var(--text-tertiary)',fontSize:12,flexDirection:'row',alignItems:'center',paddingTop:0}}>{label}</span>
-      <span style={{fontSize:12.5,color:color||'var(--text-primary)',fontWeight:500,fontFamily:mono?'var(--font-mono)':'inherit'}}>{value}</span>
+    <div style={{display:'flex',justifyContent:'space-between',padding:'9px 0',borderBottom:'1px solid var(--border-subtle)',gap:12}}>
+      <span style={{fontSize:12,color:'var(--text-tertiary)',fontWeight:500,flexShrink:0}}>{label}</span>
+      <span style={{fontSize:12.5,color:color||'var(--text-primary)',fontWeight:500,textAlign:'right',fontFamily:mono?'var(--font-mono)':'inherit'}}>{value}</span>
     </div>
   )
   return (
@@ -21,7 +28,7 @@ export default function CasePanel({ caseData }) {
         <div>
           <div className="t-label" style={{color:'var(--text-muted)',marginBottom:8}}>Transaction</div>
           <Row label="ID" value={caseData.transaction_id} mono />
-          <Row label="Amount" value={caseData.amount!=null?`₹${caseData.amount.toLocaleString()}`:null} mono />
+          <Row label="Amount" value={caseData.amount!=null?\u20b9:null} mono />
           <Row label="Payment" value={caseData.payment_status} color={caseData.payment_status==='SUCCESS'?'var(--ok)':'var(--danger)'} />
           <Row label="Order" value={caseData.order_status} color={caseData.order_status==='CONFIRMED'?'var(--ok)':'var(--warn)'} />
         </div>
@@ -51,7 +58,7 @@ export default function CasePanel({ caseData }) {
             <span className="t-label" style={{color:'var(--text-muted)'}}>Confidence</span>
             <span style={{fontSize:20,fontWeight:700,letterSpacing:'-0.03em',color:cc}}>{conf}%</span>
           </div>
-          <div className="progress"><div className="progress__fill" style={{width:`${conf}%`,background:cc}} /></div>
+          <div className="progress"><div className="confidence-bar__fill" style={{width:${conf}%,background:cc}} /></div>
           {caseData.confidence_fields&&Object.entries(caseData.confidence_fields).map(([f,l])=>(
             <div key={f} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',marginTop:8}}>
               <span style={{fontSize:11,color:'var(--text-tertiary)'}}>{f.replace(/_/g,' ')}</span>
@@ -75,3 +82,11 @@ export default function CasePanel({ caseData }) {
     </div>
   )
 }
+""".strip()
+
+for path, content in files.items():
+    p = base / path
+    p.write_text(content, encoding='utf-8')
+    print(f'wrote {path} ({len(content)} chars)')
+
+print('done')

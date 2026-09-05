@@ -8,13 +8,13 @@ export const LANGUAGES = {
     key: "en",
     name: "English",
     locale: "en-IN",
-    greeting: "Hello, this is PRISM, your AI support assistant. Please describe your problem and I'll help you resolve it."
+    greeting: "Hello! I'm PRISM, your AI assistant. How can I help you today? Please tell me what issue you are facing."
   },
   hi: {
     key: "hi",
     name: "Hindi",
     locale: "hi-IN",
-    greeting: "Namaste! Main PRISM hoon, aapka AI support assistant. Apni problem batayein, main help karunga."
+    greeting: "Namaste! Main PRISM hoon, aapka AI assistant. Aaj main aapki kya madad kar sakta hoon? Apni problem batayein."
   },
 }
 

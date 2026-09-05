@@ -15,6 +15,7 @@ export default defineConfig({
       '/chat': 'http://localhost:8001',
       '/debug': 'http://localhost:8001',
       '/state': 'http://localhost:8001',
+      '/active-state': 'http://localhost:8001',
       '/asr': 'http://localhost:8001',
       '/ws': {
         target: 'ws://localhost:8001',

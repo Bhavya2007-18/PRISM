@@ -3,12 +3,17 @@ PRISM Backend — FastAPI application
 Main entry point with all API endpoints.
 """
 import os
+import sys
 import base64
 import json
 import re
 import time
 import uuid
 import asyncio
+
+# Make sibling modules importable whether launched as `uvicorn backend.main:app`
+# (from the repo root, per render.yaml) or `uvicorn main:app` (from backend/).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException, Request, Query, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,6 +52,9 @@ app.add_middleware(
 # Active Agora agent sessions: channel -> agent_id
 active_sessions: dict[str, str] = {}
 
+# Default LLM model — matches llm_service.get_llm_config() and .env.example
+DEFAULT_LLM_MODEL = "openai/gpt-oss-20b"
+
 
 # ── Pydantic models ───────────────────────────────────────────────────
 
@@ -82,14 +90,14 @@ async def chat_test():
     """Debug endpoint — tests LLM connectivity and returns basic connectivity status."""
     llm_base_url = os.getenv("LLM_BASE_URL", "")
     llm_api_key = os.getenv("LLM_API_KEY", "")
-    llm_model = os.getenv("LLM_MODEL", "")
-    
+    llm_model = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
+
     result = {
         "llm_base_url": llm_base_url,
         "llm_model": llm_model,
         "api_key_configured": bool(llm_api_key),
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
@@ -110,7 +118,7 @@ async def chat_test():
     except Exception as e:
         result["success"] = False
         result["error"] = "Failed to connect to LLM service"
-    
+
     return result
 
 
@@ -157,9 +165,9 @@ async def start_session(req: SessionStartRequest):
     app_cert = os.getenv("AGORA_APP_CERTIFICATE", "")
     customer_id = os.getenv("AGORA_CUSTOMER_ID", "")
     customer_secret = os.getenv("AGORA_CUSTOMER_SECRET", "")
-    backend_url = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000")
+    backend_url = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8001")
     llm_key = os.getenv("LLM_API_KEY", "")
-    llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    llm_model = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
     # Ensure case state exists for this channel
     from context import get_or_create_case, cases as _cases
     # If previous session was escalated or taken over, start fresh
@@ -193,8 +201,10 @@ async def start_session(req: SessionStartRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Token generation failed: {e}")
 
-    from agent import PRISM_SYSTEM_PROMPT
-    from tools import ALL_TOOLS
+    # Agora forwards each turn to /llm-proxy, which runs the PRISM voice agent.
+    # We pass the same system prompt + tool schemas the agent itself uses so the
+    # Agora agent config is consistent with the live brain.
+    from voice_agent import PRISM_VOICE_ASSISTANT_SYSTEM_PROMPT, get_tool_schemas
 
     # LLM proxy URL — Agora will POST to this endpoint for each conversation turn
     llm_proxy_url = f"{backend_url}/llm-proxy?channel={req.channel}"
@@ -215,8 +225,8 @@ async def start_session(req: SessionStartRequest):
                 "greeting_message": "Namaste! Main PRISM hoon. Aap kaise help kar sakta hoon?",
                 "max_tokens": 200,
                 "temperature": 0.7,
-                "system_messages": [{"role": "system", "content": PRISM_SYSTEM_PROMPT}],
-                "tools": ALL_TOOLS,
+                "system_messages": [{"role": "system", "content": PRISM_VOICE_ASSISTANT_SYSTEM_PROMPT}],
+                "tools": get_tool_schemas(case),
             },
             "tts": {
                 "vendor": "agora",
@@ -293,161 +303,16 @@ async def mock_transaction(tx_id: str):
     return check_transaction(tx_id)
 
 
-def _run_deterministic_path(case_obj):
-    """
-    Pure, rule-based path that replicates what the LLM would do.
-    Produces the SAME state updates that tool-calling + extraction would
-    produce, so we can keep the same API contract regardless of LLM.
-    """
-    from tools import check_transaction
-    from decision import decide, Action
-    import re as _re
-
-    text = case_obj.last_user_text or ""
-    t = text.lower()
-
-    # (1) Extract transaction ID
-    m = _re.search(r"(tx[0-9a-z]{4,})", t, _re.IGNORECASE)
-    if m and not case_obj.transaction_id:
-        case_obj.transaction_id = m.group(1).upper()
-        if "transaction_id" not in case_obj.verified:
-            case_obj.verified.append("transaction_id")
-        case_obj.unverified = [f for f in case_obj.unverified if f != "transaction_id"]
-
-    # (2) Extract amount (₹NN, Rs NN, rupees NN, "1,499")
-    m_amt = _re.search(r"(?:₹|rs\.?|rupees?)\s*([\d,]+(?:\.\d+)?)|(\d{3,}(?:[.,]\d+)?)\s*(?:rupees?|rs|₹)", t, _re.IGNORECASE)
-    if m_amt and not case_obj.amount:
-        amt_str = (m_amt.group(1) or m_amt.group(2) or "").replace(",", "")
-        try:
-            case_obj.amount = float(amt_str)
-            if "amount" not in case_obj.verified:
-                case_obj.verified.append("amount")
-            case_obj.unverified = [f for f in case_obj.unverified if f != "amount"]
-        except ValueError:
-            pass
-
-    # (3) Language detection (tiny rule-based)
-    hindi_cues = _re.search(r"[ऀ-ॿ]", text) is not None
-    hinglish_cues = _re.search(r"\b(mera|meri|main|kya|kyun|nahi|hua|gaya|gayi|paise|rupay|bhai|naam|aap|kar|sakta|sakte|hoon|hai|hai\b|transaction|order|id)\b", t) is not None
-    langs = []
-    if hindi_cues or hinglish_cues:
-        langs.append("Hindi")
-        if _re.search(r"[a-z]{3,}", t):
-            langs.append("English")
-    if not langs:
-        langs = ["English"]
-    case_obj.language = list(dict.fromkeys(case_obj.language + langs))
-
-    # (4) Intent
-    if not case_obj.intent:
-        if _re.search(r"refund|wapas|wapas|cancel|cancelled", t):
-            case_obj.intent = "refund_request"
-        elif _re.search(r"(deliver|ship|tracking|aaya|nahi aaya)", t):
-            case_obj.intent = "delivery_issue"
-        elif _re.search(r"(payment|charge|charged|kat|deduct|kat gaya|rupay|paise|order.*confirm|confirm.*nahi|transaction)", t):
-            case_obj.intent = "payment_issue"
-        else:
-            case_obj.intent = "general_issue"
-
-    # (5) Issue flags
-    if _re.search(r"(order.*confirm|confirm.*nahi|not.*confirm|pending|order.*hua\s*nahi)", t):
-        case_obj.order_status = "NOT_CONFIRMED"
-        if "order_status" not in case_obj.verified and case_obj.order_status == "NOT_CONFIRMED":
-            # we don't mark order_status VERIFIED until tool confirms it
-            pass
-    if _re.search(r"(payment|kat|deduct|successful|success|ho gaya)", t):
-        # user claims payment was made
-        pass
-
-    # (6) User-requested human
-    if _re.search(r"(human|a insaan|agent|manager|customer care|support|baat karni|speak to|real person|operator)", t):
-        case_obj.user_requested_human = True
-
-    # (7) If we have a transaction_id, call the tool (mocked, same function LLM would)
-    local_tool_result = {}
-    local_tool_executed = None
-    if case_obj.transaction_id and ("payment_status" not in case_obj.verified):
-        local_tool_executed = "check_transaction"
-        local_tool_result = check_transaction(case_obj.transaction_id)
-        if local_tool_result.get("success"):
-            case_obj.payment_status = local_tool_result["status"]
-            case_obj.order_status = local_tool_result["order_status"]
-            case_obj.amount = float(local_tool_result["amount"])
-            for field in ["payment_status", "order_status", "amount", "transaction_id"]:
-                if field not in case_obj.verified:
-                    case_obj.verified.append(field)
-            case_obj.unverified = [f for f in case_obj.unverified if f not in case_obj.verified]
-        else:
-            case_obj.tool_failed = True
-
-    # (8) Choose reply text
-    act_after, reason_after = decide(case_obj)
-
-    if case_obj.user_requested_human or act_after == Action.ESCALATE:
-        reply = (
-            "Main samajh gaya hoon. Maine aapke transaction details check kar li hain — "
-            f"₹{int(case_obj.amount or 1499)} ka payment successful tha, "
-            "lekin abhi order confirm nahi hua hai. Mujhe iske aage kuch "
-            "points 100% sure nahi hain, isliye galat information dene se accha "
-            "main aapko ek human agent se connect kar deta hoon. Unke paas poora "
-            "context already available hai, aapko kuch repeat nahi karna padega."
-        )
-    elif local_tool_executed == "check_transaction":
-        reply = (
-            f"Dhanyavaad! Maine {case_obj.transaction_id} ko verify kar liya: "
-            f"₹{int(case_obj.amount or 0)} ka payment SUCCESSFUL mila hai, "
-            "lekin order abhi CONFIRMED nahi hai. Main duplicate charge ke baare "
-            "mein aur clarity nahi de sakta — agar aap chaho toh main aapko "
-            "ek human specialist se connect kar sakta hoon."
-        )
-    elif case_obj.transaction_id and not case_obj.payment_status:
-        reply = (
-            "Dhanyavaad! Main is transaction ko abhi verify karta hoon, ek second."
-        )
-    elif not case_obj.transaction_id and case_obj.intent == "payment_issue":
-        reply = (
-            "Samajh gaya — payment kat gaya but order confirm nahi hua, right? "
-            "Kya aapke paas transaction ID hai? (jaise TX48291 — milta hai SMS ya email mein)"
-        )
-    elif case_obj.intent == "refund_request":
-        reply = "Refund ke liye main aapki help kar sakta hoon. Order ID ya transaction ID share karein."
-    elif case_obj.intent == "delivery_issue":
-        reply = "Delivery delay ke liye sorry. Order ID dein, main tracking check karta hoon."
-    else:
-        reply = (
-            "Main PRISM hoon — payment, order, delivery, refund — sab mein help kar sakta hoon. "
-            "Aapki problem kya hai? Detail mein batayein."
-        )
-
-    return reply, local_tool_executed, local_tool_result, act_after, reason_after
-
-
 # ── /llm-proxy ────────────────────────────────────────────────────────
 
 @app.post("/llm-proxy")
 async def llm_proxy(request: Request, channel: str = Query(default="prism-demo")):
     """
-    The heart of PRISM.
-
-    Receives OpenAI-format chat completion requests from Agora.
-    Steps:
-    1. Get or create case state for this channel
-    2. Run decision engine (pure Python, no LLM)
-    3. Inject PRISM system prompt + case context + directive into messages
-    4. Forward to real LLM
-    5. If tool_calls in response: execute tool, update case state, re-call LLM
-    6. Strip <EXTRACT> blocks and parse them to update case state
-    7. If decision engine says ESCALATE: trigger escalation
-    8. Return streaming SSE response to Agora
+    Voice turn handler. Agora's Conversational AI agent POSTs each turn here as an
+    OpenAI-style chat completion request; PRISM runs the voice agent (LLM tool
+    calling + deterministic policy gate) and streams back the reply as SSE.
     """
-    from agent import PRISM_SYSTEM_PROMPT, build_case_context_message
-    from context import get_or_create_case, update_case_from_extract, escalated_cases
-    from decision import decide, Action
-    from tools import check_transaction, create_escalation_ticket, ALL_TOOLS
-
-    llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    llm_api_key = os.getenv("LLM_API_KEY", "")
-    llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    from voice_agent import run_agent_turn
 
     try:
         body = await request.json()
@@ -455,221 +320,12 @@ async def llm_proxy(request: Request, channel: str = Query(default="prism-demo")
         body = {}
 
     messages: list = body.get("messages", [])
-    model: str = body.get("model", llm_model)
+    model: str = body.get("model", os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL))
 
-    # ── 1. Case state ─────────────────────────────────────────────────
-    case = get_or_create_case(channel)
+    result = await run_agent_turn(channel, messages)
 
-    # ── 2. Decision engine ────────────────────────────────────────────
-    action, reason = decide(case)
-
-    # ── 3. Build augmented message list ──────────────────────────────
-    # Separate existing system messages from the rest
-    existing_system = [m for m in messages if m.get("role") == "system"]
-    non_system = [m for m in messages if m.get("role") != "system"]
-
-    # Save incoming user message to case.last_user_text
-    user_msgs = [m for m in non_system if m.get("role") == "user"]
-    if user_msgs:
-        case.last_user_text = user_msgs[-1].get("content", "")
-    case.conversation_history = list(non_system)
-
-    # Build system message block
-    system_block = []
-
-    # 3a. PRISM base prompt (add if not already present)
-    if not any(PRISM_SYSTEM_PROMPT[:100] in m.get("content", "") for m in existing_system):
-        system_block.append({"role": "system", "content": PRISM_SYSTEM_PROMPT})
-
-    system_block.extend(existing_system)
-
-    # 3b. Case context injection
-    case_context_content = build_case_context_message(
-        case.to_prompt_summary(), action.value, reason
-    )
-    system_block.append({"role": "system", "content": case_context_content})
-
-    # 3c. Escalation directive (if ESCALATE and not yet escalated)
-    if action == Action.ESCALATE and not case.escalated:
-        system_block.append({
-            "role": "system",
-            "content": (
-                "URGENT DIRECTIVE: You must escalate this case now. "
-                f"Reason: {reason}. "
-                "Tell the user warmly but clearly: you've found the transaction details, "
-                "but you cannot confidently determine whether a duplicate charge occurred. "
-                "Say you're connecting them with a specialist who can investigate properly. "
-                "Do NOT guess or make up an answer. Keep it under 3 sentences. Be honest and warm."
-            )
-        })
-
-    final_messages = system_block + non_system
-
-    # Check LLM availability
-    llm_available = bool(llm_api_key) and not llm_api_key.startswith("LLM Error") and (llm_base_url != "MOCK")
-
-    if not llm_available:
-        print("[PRISM] LLM not available for proxy, running deterministic fallback path.")
-        deterministic_reply, tool_executed_d, tool_result_d, act_final, reason_final = _run_deterministic_path(case)
-        if act_final == Action.ESCALATE and not case.escalated:
-            _trigger_escalation(case, reason_final)
-        
-        case.conversation_history.append({"role": "assistant", "content": deterministic_reply})
-        return _streaming_response(model, deterministic_reply)
-
-    # ── 4. Call LLM (non-streaming so we can intercept tool calls) ────
-    llm_headers = {
-        "Authorization": f"Bearer {llm_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    llm_payload = {
-        **{k: v for k, v in body.items() if k not in ("messages", "stream", "tools")},
-        "model": model,
-        "messages": final_messages,
-        "tools": ALL_TOOLS,
-        "tool_choice": "auto",
-        "stream": False,
-        "max_tokens": body.get("max_tokens", 200),
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{llm_base_url}/chat/completions",
-                headers=llm_headers,
-                json=llm_payload,
-            )
-        if resp.status_code != 200:
-            raise ValueError(f"LLM error {resp.status_code}: {resp.text[:200]}")
-        llm_data = resp.json()
-        choices = llm_data.get("choices", [])
-        if not choices:
-            raise ValueError("LLM returned no choices")
-        raw_content_temp = choices[0].get("message", {}).get("content") or ""
-        if "error" in raw_content_temp.lower() or "api key" in raw_content_temp.lower() or "llm error" in raw_content_temp.lower():
-            raise ValueError("LLM returned error content")
-    except Exception as e:
-        print(f"[PRISM] LLM call failed, running deterministic fallback path: {e}")
-        deterministic_reply, tool_executed_d, tool_result_d, act_final, reason_final = _run_deterministic_path(case)
-        if act_final == Action.ESCALATE and not case.escalated:
-            _trigger_escalation(case, reason_final)
-        
-        case.conversation_history.append({"role": "assistant", "content": deterministic_reply})
-        return _streaming_response(model, deterministic_reply)
-
-    choice = llm_data.get("choices", [{}])[0]
-    message = choice.get("message", {})
-
-    # ── 5. Tool call interception ─────────────────────────────────────
-    if message.get("tool_calls"):
-        tool_call = message["tool_calls"][0]
-        fn_name = tool_call["function"]["name"]
-        try:
-            fn_args = json.loads(tool_call["function"]["arguments"])
-        except json.JSONDecodeError:
-            fn_args = {}
-
-        print(f"[PRISM] Tool call: {fn_name}({fn_args})")
-
-        tool_result = {}
-        if fn_name == "check_transaction":
-            tx_id = fn_args.get("transaction_id", "")
-            tool_result = check_transaction(tx_id)
-            print(f"[PRISM] Tool result: {tool_result}")
-
-            if tool_result.get("success"):
-                # Update case state with verified tool data
-                case.payment_status = tool_result["status"]
-                case.order_status = tool_result["order_status"]
-                case.amount = float(tool_result["amount"])
-                for field in ["payment_status", "order_status", "amount", "transaction_id"]:
-                    if field not in case.verified:
-                        case.verified.append(field)
-                case.unverified = [f for f in case.unverified if f not in case.verified]
-            else:
-                case.tool_failed = True
-
-        # Re-evaluate after tool execution
-        action_after, reason_after = decide(case)
-        print(f"[PRISM] Decision after tool: {action_after} — {reason_after}")
-
-        # Build follow-up messages with tool result
-        follow_up_messages = final_messages + [
-            {"role": "assistant", "tool_calls": message["tool_calls"], "content": None},
-            {
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "content": json.dumps(tool_result),
-            }
-        ]
-
-        # Add post-tool directive
-        if action_after == Action.ESCALATE and not case.escalated:
-            follow_up_messages.append({
-                "role": "system",
-                "content": (
-                    "DIRECTIVE: Based on the transaction data you just retrieved, you must now escalate. "
-                    f"Reason: {reason_after}. "
-                    "Tell the user specifically: you can see the ₹1,499 payment was successful, "
-                    "but the order was not confirmed, and you cannot determine if there was a duplicate charge. "
-                    "Say you're connecting them with a specialist. "
-                    "Do not invent information. Be warm, honest, and brief (2-3 sentences max)."
-                )
-            })
-
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                follow_resp = await client.post(
-                    f"{llm_base_url}/chat/completions",
-                    headers=llm_headers,
-                    json={
-                        **{k: v for k, v in body.items() if k not in ("messages", "stream", "tools")},
-                        "model": model,
-                        "messages": follow_up_messages,
-                        "stream": False,
-                        "max_tokens": body.get("max_tokens", 200),
-                    },
-                )
-            if follow_resp.status_code != 200:
-                raise ValueError(f"Follow-up LLM error {follow_resp.status_code}")
-            follow_data = follow_resp.json()
-            raw_content = follow_data["choices"][0]["message"].get("content") or ""
-            if "error" in raw_content.lower() or "api key" in raw_content.lower() or "llm error" in raw_content.lower():
-                raise ValueError("Follow-up LLM returned error text")
-        except Exception as e:
-            print(f"[PRISM] Follow-up LLM call failed: {e}")
-            raw_content = (
-                f"Maine aapka ₹{int(case.amount or 0)} ka transaction dekha — "
-                "payment successful hai lekin order confirm nahi hua. "
-                "Duplicate charge ke baare mein main confident nahi hoon, "
-                "isliye main aapko ek specialist se connect kar raha hoon."
-            )
-
-        clean_content, extracted = _extract_and_strip(raw_content)
-        if extracted:
-            update_case_from_extract(channel, extracted)
-
-        if action_after == Action.ESCALATE and not case.escalated:
-            _trigger_escalation(case, reason_after)
-
-        return _streaming_response(model, clean_content, llm_data)
-
-    # ── 6. Normal response (no tool call) ────────────────────────────
-    raw_content = message.get("content") or ""
-    clean_content, extracted = _extract_and_strip(raw_content)
-
-    if extracted:
-        update_case_from_extract(channel, extracted)
-
-    # Re-evaluate after extract update
-    action_final, reason_final = decide(case)
-    print(f"[PRISM] Decision: {action_final} — {reason_final} | Case: {case.to_prompt_summary()}")
-
-    if action_final == Action.ESCALATE and not case.escalated:
-        _trigger_escalation(case, reason_final)
-
-    return _streaming_response(model, clean_content, llm_data)
+    reply_content = result.get("content", "")
+    return _streaming_response(model, reply_content)
 
 
 # ── Helper functions ──────────────────────────────────────────────────
@@ -729,65 +385,21 @@ def _build_ai_state(case, action, reason: str, tool_executed=None, tool_result=N
         "tool_status": tool_status,
         "tool_result": safe_tool_result,
         "blocking_fields": report.blocking_fields,
+        # ── Deterministic policy gate (PRISM's escalation authority) ──────
+        "policy_decision": case.policy_decision,
+        "policy_reason": case.policy_reason,
     }
 
 
-def _extract_and_strip(content: str) -> tuple[str, dict | None]:
-    """Remove <EXTRACT>...</EXTRACT> from LLM response and parse the JSON."""
-    pattern = r'<EXTRACT>(.*?)</EXTRACT>'
-    match = re.search(pattern, content, re.DOTALL)
-    extracted = None
-    if match:
-        try:
-            extracted = json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-        content = re.sub(pattern, '', content, flags=re.DOTALL).strip()
-    # Also strip any residual XML-like tags the model might add
-    content = re.sub(r'<[A-Z_]+>.*?</[A-Z_]+>', '', content, flags=re.DOTALL).strip()
-    return content, extracted
-
-
-def _trigger_escalation(case, reason: str) -> None:
-    """Mark case as escalated, create ticket, store in escalated_cases."""
-    from tools import create_escalation_ticket
-    from context import escalated_cases
-
-    # Auto-fill for demo if amount is 1499 or mentioned in last message
-    amount_is_1499 = False
-    if case.amount == 1499.0 or case.amount == 1499:
-        amount_is_1499 = True
-    elif case.last_user_text and ("1,499" in case.last_user_text or "1499" in case.last_user_text):
-        amount_is_1499 = True
-
-    if amount_is_1499:
-        if not case.transaction_id:
-            case.transaction_id = "TX48291"
-        if not case.amount:
-            case.amount = 1499.0
-        if "transaction_id" not in case.verified:
-            case.verified.append("transaction_id")
-        if "amount" not in case.verified:
-            case.verified.append("amount")
-        
-        # Check transaction tool result details to mock verify
-        case.payment_status = "SUCCESS"
-        case.order_status = "NOT_CONFIRMED"
-        if "payment_status" not in case.verified:
-            case.verified.append("payment_status")
-        if "order_status" not in case.verified:
-            case.verified.append("order_status")
-        # Ensure it is removed from unverified if it got put in there
-        case.unverified = [f for f in case.unverified if f not in case.verified]
-
-    case.escalated = True
-    case.escalation_reason = reason
-
-    summary = create_escalation_ticket(case, reason)
-    case.escalation_summary = summary
-    escalated_cases[case.case_id] = summary
-
-    print(f"[PRISM] 🔴 ESCALATED — {case.case_id} | Reason: {reason}")
+def _safe_transcript(case) -> list:
+    """Return the user/assistant turns as a safe transcript for the live UI."""
+    out = []
+    for m in case.conversation_history:
+        role = m.get("role")
+        content = m.get("content")
+        if role in ("user", "assistant") and content:
+            out.append({"role": role, "content": content})
+    return out
 
 
 def _streaming_response(model: str, content: str, original: dict = None) -> StreamingResponse:
@@ -832,247 +444,36 @@ def _streaming_response(model: str, content: str, original: dict = None) -> Stre
 @app.post("/chat")
 async def chat(req: ChatRequest):
     """
-    Text-mode chat endpoint.
-    Runs the same PRISM logic as /llm-proxy but accepts plain text
-    and returns a plain text response. No Agora required.
+    Text-mode chat endpoint. Runs the same PRISM voice agent as the voice path
+    (LLM tool calling + deterministic policy gate), so text and voice behave
+    identically.
     """
-    from agent import PRISM_SYSTEM_PROMPT, build_case_context_message
-    from context import get_or_create_case, update_case_from_extract, escalated_cases
-    from decision import decide, Action
-    from tools import check_transaction, ALL_TOOLS
-
-    llm_base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-    llm_api_key = os.getenv("LLM_API_KEY", "")
-    llm_model = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
+    from voice_agent import run_agent_turn
+    from context import get_or_create_case
 
     channel = req.channel
     case = get_or_create_case(channel)
     if req.language and req.language not in case.language:
         case.language.append(req.language)
 
-    case.last_user_text = req.message
+    incoming_messages = list(case.conversation_history) + [{"role": "user", "content": req.message}]
+    result = await run_agent_turn(channel, incoming_messages)
 
-    # Append user message to conversation history
-    case.conversation_history.append({"role": "user", "content": req.message})
+    reply_text = result.get("content", "")
+    tool_executed = result.get("tool_executed")
 
-    # Decision engine
-    action, reason = decide(case)
-
-    # Build messages
-    system_block = [
-        {"role": "system", "content": PRISM_SYSTEM_PROMPT},
-        {"role": "system", "content": build_case_context_message(
-            case.to_prompt_summary(), action.value, reason
-        )},
-    ]
-
-    if action == Action.ESCALATE and not case.escalated:
-        system_block.append({
-            "role": "system",
-            "content": (
-                "URGENT DIRECTIVE: Escalate this case now. "
-                f"Reason: {reason}. "
-                "Tell the user warmly that you cannot confidently resolve this "
-                "and are connecting them with a specialist. Under 3 sentences."
-            )
-        })
-
-    final_messages = system_block + case.conversation_history
-
-    llm_headers = {
-        "Authorization": f"Bearer {llm_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    llm_payload = {
-        "model": llm_model,
-        "messages": final_messages,
-        "tools": ALL_TOOLS,
-        "tool_choice": "auto",
-        "stream": False,
-        "max_tokens": 250,
-        "temperature": 0.7,
-    }
-
-    llm_available = bool(llm_api_key) and not llm_api_key.startswith("LLM Error") and (llm_base_url != "MOCK")
-    raw_content = ""
-    tool_executed = None
-    tool_result = {}
-
-    if llm_available:
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{llm_base_url}/chat/completions",
-                    headers=llm_headers,
-                    json=llm_payload,
-                )
-            if resp.status_code != 200:
-                raise ValueError(f"LLM error {resp.status_code}: {resp.text[:200]}")
-            llm_data = resp.json()
-            choices = llm_data.get("choices", [])
-            if not choices:
-                raise ValueError("LLM returned no choices")
-            raw_content_temp = choices[0].get("message", {}).get("content") or ""
-            if "error" in raw_content_temp.lower() or "api key" in raw_content_temp.lower() or "llm error" in raw_content_temp.lower():
-                raise ValueError("LLM returned error content")
-        except Exception as e:
-            print(f"[PRISM/chat] LLM unavailable, falling back to deterministic path: {e}")
-            llm_available = False
-            llm_data = None
-    else:
-        llm_data = None
-
-    # ── Check if LLM response is valid ──
-    is_valid_llm = False
-    if llm_available and llm_data:
-        choices = llm_data.get("choices", [])
-        if choices:
-            first_choice = choices[0]
-            message = first_choice.get("message", {})
-            raw_content = message.get("content") or ""
-            if not ("error" in raw_content.lower() or "api key" in raw_content.lower() or "llm error" in raw_content.lower()):
-                is_valid_llm = True
-
-    # ── Branch: LLM or deterministic ──────────────────────────────────
-    if is_valid_llm:
-        choice = llm_data.get("choices", [{}])[0]
-        message = choice.get("message", {})
-
-        # ── Tool call interception ────────────────────────────────────────
-        if message.get("tool_calls"):
-            tool_call = message["tool_calls"][0]
-            fn_name = tool_call["function"]["name"]
-            try:
-                fn_args = json.loads(tool_call["function"]["arguments"])
-            except json.JSONDecodeError:
-                fn_args = {}
-
-            print(f"[PRISM/chat] Tool call: {fn_name}({fn_args})")
-
-            tool_executed = fn_name
-            if fn_name == "check_transaction":
-                tx_id = fn_args.get("transaction_id", "")
-                tool_result = check_transaction(tx_id)
-                print(f"[PRISM/chat] Tool result: {tool_result}")
-
-                if tool_result.get("success"):
-                    case.payment_status = tool_result["status"]
-                    case.order_status = tool_result["order_status"]
-                    case.amount = float(tool_result["amount"])
-                    for field in ["payment_status", "order_status", "amount", "transaction_id"]:
-                        if field not in case.verified:
-                            case.verified.append(field)
-                    case.unverified = [f for f in case.unverified if f not in case.verified]
-                else:
-                    case.tool_failed = True
-
-            action_after, reason_after = decide(case)
-
-            follow_messages = final_messages + [
-                {"role": "assistant", "tool_calls": message["tool_calls"], "content": None},
-                {"role": "tool", "tool_call_id": tool_call["id"], "content": json.dumps(tool_result)},
-            ]
-
-            if action_after == Action.ESCALATE and not case.escalated:
-                follow_messages.append({
-                    "role": "system",
-                    "content": (
-                        "DIRECTIVE: Escalate now. "
-                        f"Reason: {reason_after}. "
-                        "Tell the user what you found (transaction details), "
-                        "then say you cannot determine the duplicate charge status "
-                        "and are connecting them with a specialist. Be warm and brief."
-                    )
-                })
-
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    follow_resp = await client.post(
-                        f"{llm_base_url}/chat/completions",
-                        headers=llm_headers,
-                        json={
-                            "model": llm_model,
-                            "messages": follow_messages,
-                            "stream": False,
-                            "max_tokens": 250,
-                        },
-                    )
-                follow_data = follow_resp.json()
-                raw_content = follow_data["choices"][0]["message"].get("content") or ""
-            except Exception as e:
-                print(f"[PRISM/chat] Follow-up LLM failed → deterministic reply: {e}")
-                raw_content, _, _, action_after, reason_after = _run_deterministic_path(case)
-
-            clean_content, extracted = _extract_and_strip(raw_content)
-            if extracted:
-                update_case_from_extract(channel, extracted)
-            if action_after == Action.ESCALATE and not case.escalated:
-                _trigger_escalation(case, reason_after)
-
-            # Guard: if LLM returned only the EXTRACT block, use deterministic reply
-            if not clean_content or not clean_content.strip():
-                clean_content, _, _, _, _ = _run_deterministic_path(case)
-
-            case.conversation_history.append({"role": "assistant", "content": clean_content})
-            _ts = "completed" if (tool_result and tool_result.get("success")) else ("failed" if case.tool_failed else "completed")
-            return {
-                "reply": clean_content,
-                "escalated": case.escalated,
-                "case_id": case.case_id if case.escalated else None,
-                "action": action_after.value,
-                "reason_for_escalation": (reason_after if case.escalated else None),
-                "turn_id": f"turn_{uuid.uuid4().hex[:8]}",
-                "ai_state": _build_ai_state(case, action_after, reason_after, tool_executed, tool_result, _ts),
-            }
-
-        # ── Normal LLM response ───────────────────────────────────────────
-        raw_content = message.get("content") or ""
-        clean_content, extracted = _extract_and_strip(raw_content)
-
-        if extracted:
-            update_case_from_extract(channel, extracted)
-
-        action_final, reason_final = decide(case)
-        print(f"[PRISM/chat] Decision: {action_final} | {case.to_prompt_summary()}")
-
-        if action_final == Action.ESCALATE and not case.escalated:
-            _trigger_escalation(case, reason_final)
-
-        # Guard: if LLM returned only the EXTRACT block, use deterministic reply
-        if not clean_content or not clean_content.strip():
-            clean_content, _, _, _, _ = _run_deterministic_path(case)
-
-        case.conversation_history.append({"role": "assistant", "content": clean_content})
-
-        return {
-            "reply": clean_content,
-            "escalated": case.escalated,
-            "case_id": case.case_id if case.escalated else None,
-            "action": action_final.value,
-            "reason_for_escalation": (reason_final if case.escalated else None),
-            "turn_id": f"turn_{uuid.uuid4().hex[:8]}",
-            "ai_state": _build_ai_state(case, action_final, reason_final),
-        }
-
-    # ── LLM unavailable → 100% deterministic fallback ──────────────────
-    deterministic_reply, tool_executed_d, tool_result_d, act_final, reason_final = _run_deterministic_path(case)
-    tool_executed = tool_executed or tool_executed_d
-    tool_result = tool_result or tool_result_d
-
-    if act_final == Action.ESCALATE and not case.escalated:
-        _trigger_escalation(case, reason_final)
-
-    case.conversation_history.append({"role": "assistant", "content": deterministic_reply})
+    action_val = "ESCALATE" if case.escalated else ("TOOL_CALL" if tool_executed else "RESOLVE")
+    tool_status = "completed" if tool_executed else None
 
     return {
-        "reply": deterministic_reply,
+        "reply": reply_text,
         "escalated": case.escalated,
         "case_id": case.case_id if case.escalated else None,
-        "action": act_final.value,
-        "reason_for_escalation": (reason_final if case.escalated else None),
+        "action": action_val,
+        "reason_for_escalation": (case.escalation_reason if case.escalated else None),
+        "policy_decision": case.policy_decision,
         "turn_id": f"turn_{uuid.uuid4().hex[:8]}",
-        "ai_state": _build_ai_state(case, act_final, reason_final, tool_executed, tool_result),
+        "ai_state": _build_ai_state(case, action_val, case.escalation_reason or "", tool_executed=tool_executed, tool_status=tool_status),
     }
 
 
@@ -1123,26 +524,12 @@ async def debug_case(channel: str):
     from context import cases
     from confidence import get_confidence_report
     from decision import decide
+    from prism_state import derive_voice_state
     if channel not in cases:
         return {"error": "no case for this channel"}
     case = cases[channel]
     report = get_confidence_report(case)
     action, reason = decide(case)
-    # Derive voice_state from case
-    if case.taken_over:
-        voice_state = "HUMAN_CONNECTED"
-    elif case.escalated:
-        voice_state = "ESCALATING"
-    elif case.payment_status and case.duplicate_charge == "UNKNOWN":
-        voice_state = "ESCALATING"
-    elif case.transaction_id and not case.payment_status:
-        voice_state = "ACTING"
-    elif case.intent:
-        voice_state = "THINKING"
-    elif case.last_user_text:
-        voice_state = "UNDERSTANDING"
-    else:
-        voice_state = "LISTENING"
 
     return {
         "case": {
@@ -1160,6 +547,8 @@ async def debug_case(channel: str):
             "unverified": case.unverified,
             "escalated": case.escalated,
             "escalation_reason": case.escalation_reason,
+            "policy_decision": case.policy_decision,
+            "policy_reason": case.policy_reason,
             "taken_over": case.taken_over,
             "last_user_text": case.last_user_text,
         },
@@ -1171,7 +560,7 @@ async def debug_case(channel: str):
         },
         "next_action": action.value,
         "next_reason": reason,
-        "voice_state": voice_state,
+        "voice_state": derive_voice_state(case),
         "ai_state": _build_ai_state(case, action, reason),
     }
 
@@ -1181,47 +570,71 @@ async def debug_case(channel: str):
 @app.get("/state/{channel}")
 async def get_channel_state(channel: str):
     """
-    Lightweight real-time state for frontend ThinkingPanel polling.
-    Returns only safe operational state -- no internal data.
+    Lightweight real-time state for frontend ThinkingPanel polling + live
+    transcript. Returns only safe operational state -- no internal data.
     """
     from context import cases
-    from confidence import get_confidence_report
     from decision import decide
+    from prism_state import derive_voice_state, PrismState
 
     if channel not in cases:
         return {
             "channel": channel,
-            "voice_state": "IDLE",
+            "voice_state": PrismState.IDLE.value,
             "ai_state": None,
             "escalated": False,
             "taken_over": False,
+            "transcript": [],
         }
 
     case = cases[channel]
     action, reason = decide(case)
 
-    if case.taken_over:
-        voice_state = "HUMAN_CONNECTED"
-    elif case.escalated:
-        voice_state = "ESCALATING"
-    elif case.payment_status and case.duplicate_charge == "UNKNOWN":
-        voice_state = "ESCALATING"
-    elif case.transaction_id and not case.payment_status:
-        voice_state = "ACTING"
-    elif case.intent:
-        voice_state = "THINKING"
-    elif case.last_user_text:
-        voice_state = "UNDERSTANDING"
-    else:
-        voice_state = "LISTENING"
+    return {
+        "channel": channel,
+        "case_id": case.case_id,
+        "voice_state": derive_voice_state(case),
+        "ai_state": _build_ai_state(case, action, reason),
+        "escalated": case.escalated,
+        "taken_over": case.taken_over,
+        "transcript": _safe_transcript(case),
+    }
+
+
+# ── /active-state — the most recently active channel (voice or text) ─────
+
+@app.get("/active-state")
+async def get_active_state():
+    """
+    Return the state of the most recently active channel so the agent dashboard
+    follows whichever channel the customer is actually on (voice or text),
+    instead of being pinned to a hard-coded channel.
+    """
+    from context import cases
+    from decision import decide
+    from prism_state import derive_voice_state, PrismState
+
+    if not cases:
+        return {
+            "channel": None,
+            "voice_state": PrismState.IDLE.value,
+            "ai_state": None,
+            "escalated": False,
+            "taken_over": False,
+            "transcript": [],
+        }
+
+    channel, case = max(cases.items(), key=lambda kv: kv[1].last_activity_at or "")
+    action, reason = decide(case)
 
     return {
         "channel": channel,
         "case_id": case.case_id,
-        "voice_state": voice_state,
+        "voice_state": derive_voice_state(case),
         "ai_state": _build_ai_state(case, action, reason),
         "escalated": case.escalated,
         "taken_over": case.taken_over,
+        "transcript": _safe_transcript(case),
     }
 
 
@@ -1268,7 +681,7 @@ async def transcribe(
     """
     Transcribe audio to text using Faster Whisper.
     Supports Hindi, English, Hinglish (auto-detected).
-    
+
     Form: audio (webm/wav/mp3), language (optional: 'hi', 'en', 'hi-IN')
     Returns: {text, language, confidence, error}
     """
@@ -1324,4 +737,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8001))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
-

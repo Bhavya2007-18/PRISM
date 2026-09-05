@@ -3,61 +3,48 @@ import VoiceInterface from '../components/VoiceInterface'
 export default function Caller() {
   return (
     <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '40px 20px',
-      position: 'relative',
+      display: 'grid',
+      gridTemplateColumns: '1fr 420px',
+      height: '100%',
       overflow: 'hidden',
     }}>
-      {/* Ambient background glow */}
+      {/* Center: Voice interface (orb + transcript + chat) */}
       <div style={{
-        position: 'absolute',
-        top: '-10%',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        width: '800px',
-        height: '600px',
-        background: 'radial-gradient(ellipse, var(--accent-glow) 0%, transparent 60%)',
-        opacity: 0.5,
-        pointerEvents: 'none',
-        zIndex: 0,
-      }} />
-
-      {/* Main card */}
-      <div
-        className="glass-panel-accent"
-        style={{
-          position: 'relative',
-          zIndex: 1,
-        }}
-      >
-        <VoiceInterface />
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'flex-start',
+        padding: '32px 24px',
+        overflow: 'hidden',
+        borderRight: '1px solid var(--border)',
+      }}>
+        <div style={{ width: '100%', maxWidth: 520 }}>
+          <VoiceInterface />
+        </div>
+        <div style={{ marginTop: 'auto', paddingTop: 20, fontSize: 11, color: 'var(--text-muted)' }}>
+          <a href="/agent" style={{ color: 'var(--text-muted)', textDecoration: 'none', transition: 'color 0.15s ease' }}
+            onMouseEnter={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+            onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}>
+            Agent Dashboard →
+          </a>
+        </div>
       </div>
 
-      {/* Bottom corner links */}
+      {/* Right: Status info panel */}
       <div style={{
-        position: 'absolute',
-        bottom: 24,
-        right: 32,
         display: 'flex',
-        gap: 20,
-        zIndex: 2,
+        flexDirection: 'column',
+        overflow: 'hidden',
+        background: 'var(--surface-1)',
       }}>
-        <a href="/agent" style={{
-          fontSize: 11,
-          color: 'var(--text-muted)',
-          textDecoration: 'none',
-          fontWeight: 500,
-          letterSpacing: 0.5,
-          transition: 'color 0.2s ease',
-        }}
-        onMouseEnter={(e) => e.currentTarget.style.color = 'var(--accent-soft)'}
-        onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
-        >
-          Human agent? Open dashboard →
-        </a>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <span className="t-label" style={{ color: 'var(--text-tertiary)' }}>SESSION INFO</span>
+        </div>
+        <div style={{ flex: 1, padding: '20px', overflowY: 'auto' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', paddingTop: 40 }}>
+            Connect a session to see live AI state and case context.
+          </div>
+        </div>
       </div>
     </div>
   )
