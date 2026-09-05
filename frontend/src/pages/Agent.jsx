@@ -8,6 +8,7 @@ import TranscriptConsole from '../components/TranscriptConsole'
 import EscalationsPage from '../components/EscalationsPage'
 import AnalyticsPage from '../components/AnalyticsPage'
 import AgentsPage from '../components/AgentsPage'
+import PhysicalCard from '../components/PhysicalCard'
 import { getApiUrl } from '../lib/api'
 import { useNavContext } from '../context/NavContext'
 
@@ -177,7 +178,7 @@ export default function Agent() {
       flexShrink: 0,
     }}>
       {[
-        { id: 'overview',    label: 'Overview' },
+        { id: 'overview', label: 'Overview' },
         { id: 'cases',       label: 'Live Sessions' },
         { id: 'history',     label: 'Cases' },
         { id: 'escalations', label: 'Escalations' },
@@ -256,8 +257,7 @@ export default function Agent() {
             </div>
           ))}
         </div>
-      </div>
-    </div>
+      </div>    </div>
   )
 
   // ── History page ─────────────────────────────────────────────────
@@ -466,4 +466,6 @@ export default function Agent() {
     </div>
   )
 }
+
+
 

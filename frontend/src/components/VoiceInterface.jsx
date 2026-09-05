@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect } from 'react'
+﻿import { useState, useRef, useEffect } from 'react'
 import AgoraRTC from 'agora-rtc-sdk-ng'
 import { getApiUrl } from '../lib/api'
 import { LANGUAGES, DEFAULT_LANGUAGE, getLanguageConfig } from '../config/languages'
 import { ttsManager } from '../lib/tts'
 import { PRISM_STATE_CONFIG } from '../config/prismState'
-import VoiceOrb from './VoiceOrb'
+import PrismCore from './PrismCore'
 import TranscriptConsole from './TranscriptConsole'
 import IntelligencePanel from './IntelligencePanel'
 
@@ -261,33 +261,48 @@ export default function VoiceInterface() {
   const isConnecting = status === 'connecting'
   const lastMsg = messages.filter(m => m.role !== 'system').slice(-1)[0]
   const scfg = PRISM_STATE_CONFIG[voiceState] || PRISM_STATE_CONFIG.IDLE
-  const orbClass = 'voice-orb voice-orb--' + voiceState.toLowerCase()
   const sc = voiceState==='ESCALATING'?'var(--danger)':voiceState==='HUMAN_CONNECTED'?'var(--ok)':voiceState==='ACTING'?'var(--warn)':'var(--text-primary)'
+  const avgLevel = waveformBars.reduce((a,b) => a+b, 0) / waveformBars.length
+
+  // Display text for current AI state — shown with editorial typography
+  const STATE_DISPLAY = {
+    IDLE:            { line1: 'Ready.', line2: null },
+    CONNECTING:      { line1: 'Connecting', line2: null },
+    LISTENING:       { line1: 'Listening.', line2: null },
+    UNDERSTANDING:   { line1: 'Understanding', line2: 'your request.' },
+    THINKING:        { line1: 'Thinking.', line2: null },
+    ACTING:          { line1: 'Checking', line2: 'transaction.' },
+    SPEAKING:        { line1: 'Speaking.', line2: null },
+    ESCALATING:      { line1: 'Connecting you', line2: 'to a specialist.' },
+    HUMAN_CONNECTED: { line1: 'Human active.', line2: null },
+    ERROR:           { line1: 'Something', line2: 'went wrong.' },
+  }
+  const displayText = STATE_DISPLAY[voiceState] || STATE_DISPLAY.IDLE
 
   return (
-    <div style={{ background:'var(--surface-0)', border:'1px solid var(--border)', borderRadius:'var(--r-xl)', boxShadow:'var(--shadow-md)', overflow:'hidden', width:'100%' }}>
+    <div style={{ background: 'var(--surface-0)', border: '1px solid var(--border)', borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-md)', overflow: 'hidden', width: '100%' }}>
 
-      {/* Top bar */}
-      <div style={{ padding:'14px 20px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ width:7, height:7, borderRadius:'50%', display:'inline-block', background:isConnected?sc:'var(--text-muted)', flexShrink:0 }} />
-          <span style={{ fontSize:12, fontWeight:600, color:isConnected?sc:'var(--text-tertiary)', letterSpacing:'0.04em', textTransform:'uppercase' }}>
-            {isConnecting ? 'Connecting...' : isConnected ? scfg.label : 'PRISM'}
+      {/* Top bar — mode + language controls */}
+      <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className={`status-dot status-dot--${isConnected ? (voiceState === 'ESCALATING' ? 'danger' : voiceState === 'HUMAN_CONNECTED' ? 'ok' : 'ok') : 'muted'}${isConnected ? ' status-dot--breathe' : ''}`} />
+          <span key={voiceState} className="state-label" style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            {isConnecting ? 'Connecting' : isConnected ? scfg.label : 'PRISM'}
           </span>
         </div>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <div style={{ padding:'4px 10px', background:'var(--surface-1)', border:'1px solid var(--border)', borderRadius:'var(--r-md)' }}>
-            <select value={selectedLanguage} onChange={e=>handleLanguageChange(e.target.value)} disabled={isConnected||isConnecting}
-              style={{ background:'transparent', border:'none', color:'var(--text-primary)', fontSize:12, fontWeight:500, outline:'none', cursor:isConnected||isConnecting?'not-allowed':'pointer', fontFamily:'inherit' }}>
-              {Object.entries(LANGUAGES).map(([k,l]) => (
-                <option key={k} value={k} style={{ background:'#fff' }}>{l.name}</option>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ padding: '3px 10px', background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)' }}>
+            <select value={selectedLanguage} onChange={e => handleLanguageChange(e.target.value)} disabled={isConnected || isConnecting}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: 12, fontWeight: 400, outline: 'none', cursor: isConnected || isConnecting ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
+              {Object.entries(LANGUAGES).map(([k, l]) => (
+                <option key={k} value={k} style={{ background: '#fff' }}>{l.name}</option>
               ))}
             </select>
           </div>
-          <div style={{ display:'flex', background:'var(--surface-1)', borderRadius:'var(--r-md)', padding:2, border:'1px solid var(--border)' }}>
-            {[{id:'voice',icon:'Voice'},{id:'chat',icon:'Text'}].map(m => (
-              <button key={m.id} onClick={()=>{ if(!isConnected) setMode(m.id) }} disabled={isConnected}
-                style={{ padding:'4px 10px', borderRadius:'var(--r-sm)', border:'none', background:mode===m.id?'var(--text-primary)':'transparent', color:mode===m.id?'white':'var(--text-tertiary)', fontSize:11, fontWeight:600, cursor:isConnected?'not-allowed':'pointer', opacity:isConnected&&mode!==m.id?0.3:1, transition:'all 0.15s ease', fontFamily:'inherit' }}>
+          <div style={{ display: 'flex', background: 'var(--surface-1)', borderRadius: 'var(--r-md)', padding: 2, border: '1px solid var(--border)' }}>
+            {[{ id: 'voice', icon: 'Voice' }, { id: 'chat', icon: 'Text' }].map(m => (
+              <button key={m.id} onClick={() => { if (!isConnected) setMode(m.id) }} disabled={isConnected}
+                style={{ padding: '4px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: mode === m.id ? 'var(--text-primary)' : 'transparent', color: mode === m.id ? 'white' : 'var(--text-tertiary)', fontSize: 11, fontWeight: 500, cursor: isConnected ? 'not-allowed' : 'pointer', opacity: isConnected && mode !== m.id ? 0.3 : 1, transition: 'all 0.15s ease', fontFamily: 'inherit' }}>
                 {m.icon}
               </button>
             ))}
@@ -295,122 +310,166 @@ export default function VoiceInterface() {
         </div>
       </div>
 
-      {/* Voice mode */}
+      {/* ── VOICE MODE ──────────────────────────────────────────── */}
       {mode === 'voice' && (
-        <div style={{ padding:'36px 24px', display:'flex', flexDirection:'column', alignItems:'center', gap:28, minHeight:440 }}>
-          <div style={{ textAlign:'center', userSelect:'none' }}>
-            <div style={{ fontSize:44, fontWeight:700, letterSpacing:'-0.04em', color:'var(--text-primary)', lineHeight:1 }}>PRISM</div>
-            <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:6 }}>Multilingual AI Support</div>
+        <div style={{ padding: '32px 24px 28px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, minHeight: 460 }}>
+
+          {/* Editorial hero text — display typography */}
+          <div style={{ textAlign: 'center', marginBottom: 28, userSelect: 'none', minHeight: 72 }}>
+            {status === 'idle' ? (
+              <>
+                <div className="d-title" style={{ color: 'var(--text-primary)', lineHeight: 1.1 }}>
+                  Your support,
+                </div>
+                <div className="d-title d-italic" style={{ color: 'var(--text-tertiary)', lineHeight: 1.1 }}>
+                  now thinks.
+                </div>
+              </>
+            ) : (
+              <>
+                <div key={displayText.line1} className="d-section anim-display-enter" style={{ lineHeight: 1.15 }}>
+                  {displayText.line1}
+                </div>
+                {displayText.line2 && (
+                  <div key={displayText.line2} className="d-section d-italic anim-display-enter" style={{ lineHeight: 1.15, color: 'var(--text-tertiary)', animationDelay: '0.06s' }}>
+                    {displayText.line2}
+                  </div>
+                )}
+              </>
+            )}
           </div>
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:16 }}>
-            <VoiceOrb
+
+          {/* PRISM Core — the signature AI object */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+            <PrismCore
               state={voiceState}
               onClick={isConnected ? disconnect : connect}
-              size={140}
-              audioLevel={waveformBars.reduce((a,b) => a+b, 0) / waveformBars.length}
+              size={172}
+              audioLevel={avgLevel}
             />
-            <div className="waveform">
-              {waveformBars.map((h,i) => (
-                <div key={i} className={'waveform__bar' + (isConnected?' waveform__bar--active':'')} style={{ height: Math.max(3,h*100)+'%' }} />
+
+            {/* Ambient waveform */}
+            <div className="core-waveform">
+              {waveformBars.map((h, i) => (
+                <div key={i}
+                  className={'core-waveform__bar' + (isConnected ? ' core-waveform__bar--active' : '')}
+                  style={{ height: Math.max(2, h * 18) + 'px' }} />
               ))}
             </div>
           </div>
+
+          {/* Last message — editorial quote style */}
           {isConnected && lastMsg && (
-            <div className="slide-up" key={messages.length} style={{ width:'100%', maxWidth:400, padding:'16px 20px', background:'var(--surface-1)', border:'1px solid var(--border)', borderRadius:'var(--r-lg)', textAlign:'center' }}>
-              <div className="t-label" style={{ color:'var(--text-muted)', marginBottom:8 }}>{lastMsg.role==='user'?'YOU':'PRISM'}</div>
-              <div style={{ fontSize:15, lineHeight:1.6, color:'var(--text-primary)', fontWeight:lastMsg.role==='assistant'?500:400 }}>"{lastMsg.content}"</div>
+            <div className="slide-up" key={messages.length}
+              style={{ width: '100%', maxWidth: 380, marginTop: 24, padding: '14px 18px', background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)' }}>
+              <div className="t-label" style={{ marginBottom: 6 }}>{lastMsg.role === 'user' ? 'You' : 'PRISM'}</div>
+              <div style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--text-primary)', fontWeight: 400 }}>
+                {lastMsg.content}
+              </div>
             </div>
           )}
-          <div style={{ fontSize:13, color:'var(--text-tertiary)', textAlign:'center', minHeight:18 }}>
-            {prismSpeaking && 'Speaking...'}
-            {!prismSpeaking && status==='idle' && 'Click the orb to connect'}
-            {!prismSpeaking && status==='connecting' && 'Establishing connection...'}
-            {!prismSpeaking && status==='connected' && 'Speak naturally — Hindi, English or Hinglish'}
-            {!prismSpeaking && status==='error' && <span style={{ color:'var(--danger)' }}>{error}</span>}
+
+          {/* Status hint */}
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', marginTop: 20, minHeight: 16, fontWeight: 400 }}>
+            {prismSpeaking && 'Speaking…'}
+            {!prismSpeaking && status === 'idle' && 'Touch to begin'}
+            {!prismSpeaking && status === 'connecting' && 'Establishing connection…'}
+            {!prismSpeaking && status === 'connected' && 'Hindi · English · Hinglish'}
+            {!prismSpeaking && status === 'error' && <span style={{ color: 'var(--danger)' }}>{error}</span>}
           </div>
         </div>
       )}
 
-      {/* Chat mode */}
+      {/* ── CHAT MODE ───────────────────────────────────────────── */}
       {mode === 'chat' && (
-        <div style={{ display:'flex', flexDirection:'column', minHeight:480 }}>
-          <div style={{ padding:'12px 16px 8px', display:'flex', gap:6, flexWrap:'wrap', borderBottom:'1px solid var(--border-subtle)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: 480 }}>
+          {/* Quick phrase pills */}
+          <div style={{ padding: '10px 16px 8px', display: 'flex', gap: 5, flexWrap: 'wrap', borderBottom: '1px solid var(--border-subtle)' }}>
             {QUICK_PHRASES.map(p => (
-              <button key={p} onClick={()=>{ if(!isConnected) connect(); sendChatMessage(p) }}
-                style={{ padding:'4px 10px', borderRadius:'var(--r-full)', border:'1px solid var(--border)', background:'var(--surface-0)', color:'var(--text-secondary)', fontSize:11, fontWeight:500, cursor:'pointer', whiteSpace:'nowrap', fontFamily:'inherit', transition:'all 0.15s ease' }}
-                onMouseEnter={e=>{ e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-primary)' }}
-                onMouseLeave={e=>{ e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-secondary)' }}>
+              <button key={p} onClick={() => { if (!isConnected) connect(); sendChatMessage(p) }}
+                style={{ padding: '3px 10px', borderRadius: 'var(--r-full)', border: '1px solid var(--border)', background: 'var(--surface-0)', color: 'var(--text-tertiary)', fontSize: 11, fontWeight: 400, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit', transition: 'all 0.15s ease' }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--border-strong)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-tertiary)' }}>
                 {p}
               </button>
             ))}
           </div>
-          <div style={{ flex:1, overflowY:'auto', padding:'16px', maxHeight:320 }}>
+
+          {/* Messages */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px', maxHeight: 320 }}>
             {!isConnected ? (
-              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, padding:'32px 20px', textAlign:'center', height:'100%' }}>
-                <div style={{ width:44, height:44, borderRadius:'50%', background:'var(--surface-2)', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>&#128172;</div>
-                <div style={{ fontSize:13, fontWeight:500, color:'var(--text-secondary)' }}>Connect to start chatting</div>
-                <div style={{ fontSize:11, color:'var(--text-muted)', maxWidth:240, lineHeight:1.6 }}>Hindi, English, and Hinglish supported</div>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, padding: '40px 20px', textAlign: 'center', height: '100%' }}>
+                <div className="d-section" style={{ color: 'var(--text-primary)', lineHeight: 1.2 }}>Start a</div>
+                <div className="d-section d-italic" style={{ color: 'var(--text-tertiary)', lineHeight: 1.2, marginTop: -10 }}>conversation.</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontWeight: 400 }}>Hindi · English · Hinglish</div>
               </div>
             ) : (
               <TranscriptConsole messages={messages} />
             )}
           </div>
+
+          {/* Intelligence compact bar */}
           {isConnected && voiceState !== 'IDLE' && (
-            <div style={{ borderTop:'1px solid var(--border-subtle)', maxHeight:220, overflowY:'auto' }}>
+            <div style={{ borderTop: '1px solid var(--border-subtle)', maxHeight: 220, overflowY: 'auto' }}>
               <IntelligencePanel voiceState={voiceState} aiState={aiState} compact />
             </div>
           )}
         </div>
       )}
 
+      {/* ── ESCALATION BANNER ───────────────────────────────────── */}
       {escalated && (
-        <div className="slide-up" style={{ margin:'0 16px 8px', padding:'12px 16px', background:takenOver?'var(--ok-bg)':'var(--danger-bg)', border:'1px solid '+(takenOver?'var(--ok-border)':'var(--danger-border)'), borderRadius:'var(--r-lg)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <span style={{ width:7, height:7, borderRadius:'50%', display:'inline-block', background:takenOver?'var(--ok)':'var(--danger)', flexShrink:0 }} />
+        <div className="slide-up" style={{ margin: '0 16px 8px', padding: '12px 16px', background: takenOver ? 'var(--ok-bg)' : 'var(--danger-bg)', border: '1px solid ' + (takenOver ? 'var(--ok-border)' : 'var(--danger-border)'), borderRadius: 'var(--r-lg)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', display: 'inline-block', background: takenOver ? 'var(--ok)' : 'var(--danger)', flexShrink: 0 }} />
             <div>
-              <div style={{ fontSize:13, fontWeight:600, color:takenOver?'var(--ok)':'var(--danger)' }}>{takenOver?'Human agent connected':'Connecting to human agent...'}</div>
-              {escalatedCaseId && <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:1, fontFamily:'var(--font-mono)' }}>{escalatedCaseId}</div>}
+              <div style={{ fontSize: 13, fontWeight: 500, color: takenOver ? 'var(--ok)' : 'var(--danger)' }}>{takenOver ? 'Human agent connected' : 'Connecting to specialist…'}</div>
+              {escalatedCaseId && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 1, fontFamily: 'var(--font-mono)' }}>{escalatedCaseId}</div>}
             </div>
           </div>
-          <a href="/agent" style={{ fontSize:12, color:'var(--text-secondary)', textDecoration:'none', fontWeight:500 }}
-            onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'}
-            onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>Dashboard &rarr;</a>
+          <a href="/agent" style={{ fontSize: 12, color: 'var(--text-muted)', textDecoration: 'none', fontWeight: 400 }}
+            onMouseEnter={e => e.currentTarget.style.color = 'var(--text-primary)'}
+            onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}>
+            Dashboard →
+          </a>
         </div>
       )}
 
+      {/* Error */}
       {error && !isConnected && (
-        <div style={{ margin:'0 16px 8px', padding:'10px 14px', background:'var(--danger-bg)', border:'1px solid var(--danger-border)', borderRadius:'var(--r-md)', fontSize:12, color:'var(--danger)', textAlign:'center' }}>{error}</div>
+        <div style={{ margin: '0 16px 8px', padding: '10px 14px', background: 'var(--danger-bg)', border: '1px solid var(--danger-border)', borderRadius: 'var(--r-md)', fontSize: 12, color: 'var(--danger)', textAlign: 'center' }}>{error}</div>
       )}
 
-      <div style={{ padding:'12px 16px 16px', display:'flex', flexDirection:'column', gap:8, borderTop:'1px solid var(--border-subtle)' }}>
-        {mode==='chat' && isConnected && (
-          <div style={{ display:'flex', gap:6, alignItems:'flex-end' }}>
+      {/* ── FOOTER — connect button + chat input ─────────────────── */}
+      <div style={{ padding: '12px 16px 18px', display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid var(--border-subtle)' }}>
+        {mode === 'chat' && isConnected && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
             <button onMouseDown={startMicRecording} onMouseUp={stopMicRecording} onTouchStart={startMicRecording} onTouchEnd={stopMicRecording}
-              style={{ width:36, height:36, borderRadius:'var(--r-md)', border:'1px solid '+(micRecording?'var(--danger-border)':'var(--border)'), background:micRecording?'var(--danger-bg)':'var(--surface-1)', color:micRecording?'var(--danger)':'var(--text-tertiary)', fontSize:14, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-              {micRecording?'REC':'\uD83C\uDFA4'}
+              style={{ width: 36, height: 36, borderRadius: 'var(--r-md)', border: '1px solid ' + (micRecording ? 'var(--danger-border)' : 'var(--border)'), background: micRecording ? 'var(--danger-bg)' : 'var(--surface-1)', color: micRecording ? 'var(--danger)' : 'var(--text-tertiary)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: 'inherit', fontWeight: 600 }}>
+              {micRecording ? 'REC' : '⏺'}
             </button>
-            <textarea value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={handleChatKeyDown}
-              placeholder="Type your message..." rows={1} disabled={chatSending}
-              style={{ flex:1, padding:'9px 14px', background:'var(--surface-1)', border:'1px solid var(--border)', borderRadius:'var(--r-md)', color:'var(--text-primary)', fontSize:13, resize:'none', outline:'none', fontFamily:'inherit', lineHeight:1.5, maxHeight:90, overflowY:'auto' }}
-              onFocus={e=>e.currentTarget.style.borderColor='var(--border-strong)'}
-              onBlur={e=>e.currentTarget.style.borderColor='var(--border)'} />
-            <button onClick={()=>sendChatMessage()} disabled={!chatInput.trim()||chatSending}
-              style={{ width:36, height:36, borderRadius:'var(--r-md)', border:'none', background:chatInput.trim()&&!chatSending?'var(--text-primary)':'var(--surface-2)', color:chatInput.trim()&&!chatSending?'white':'var(--text-muted)', fontSize:14, fontWeight:700, cursor:chatInput.trim()&&!chatSending?'pointer':'default', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-              &#8593;
+            <textarea value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={handleChatKeyDown}
+              placeholder="Type your message…" rows={1} disabled={chatSending}
+              style={{ flex: 1, padding: '9px 14px', background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', color: 'var(--text-primary)', fontSize: 13, resize: 'none', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5, maxHeight: 90, overflowY: 'auto' }}
+              onFocus={e => e.currentTarget.style.borderColor = 'var(--border-strong)'}
+              onBlur={e => e.currentTarget.style.borderColor = 'var(--border)'} />
+            <button onClick={() => sendChatMessage()} disabled={!chatInput.trim() || chatSending}
+              style={{ width: 36, height: 36, borderRadius: 'var(--r-md)', border: 'none', background: chatInput.trim() && !chatSending ? 'var(--text-primary)' : 'var(--surface-2)', color: chatInput.trim() && !chatSending ? 'white' : 'var(--text-muted)', fontSize: 14, fontWeight: 700, cursor: chatInput.trim() && !chatSending ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              ↑
             </button>
           </div>
         )}
-        <button onClick={isConnected?disconnect:connect} disabled={isConnecting}
-          className={isConnected?'btn btn--secondary btn--lg':'btn btn--primary btn--lg'}
-          style={{ width:'100%', justifyContent:'center', gap:10 }}>
-          <span>
-            {status==='idle'&&(mode==='voice'?'Connect Voice':'Start Chat')}
-            {status==='connecting'&&'Connecting...'}
-            {status==='connected'&&'End Conversation'}
-            {status==='error'&&'Try Again'}
-          </span>
+        <button onClick={isConnected ? disconnect : connect} disabled={isConnecting}
+          className="btn--connect"
+          style={{ width: '100%', fontFamily: 'inherit' }}>
+          {status === 'idle' && (mode === 'voice' ? 'Connect Voice' : 'Start Chat')}
+          {status === 'connecting' && 'Connecting…'}
+          {status === 'connected' && 'End Conversation'}
+          {status === 'error' && 'Try Again'}
         </button>
-        <div style={{ textAlign:'center', fontSize:11, color:'var(--text-muted)' }}>Hindi &bull; English &bull; Hinglish</div>
+        <div style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-faint)', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+          Hindi · English · Hinglish
+        </div>
       </div>
     </div>
   )

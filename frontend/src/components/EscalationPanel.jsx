@@ -1,3 +1,4 @@
+﻿import PhysicalCard from './PhysicalCard'
 import { useState } from 'react'
 import { getApiUrl } from '../lib/api'
 
@@ -72,7 +73,7 @@ export default function EscalationPanel({ caseData, onTakeOver, compact = false 
   }
 
   return (
-    <div style={{ background: 'var(--surface-0)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)', overflow: 'hidden', transition: 'border-color 0.3s ease' }}>
+    <div className="card--physical" style={{ overflow: 'hidden' }}>
       {/* Header */}
       <div style={{
         padding: '13px 20px',
@@ -175,3 +176,5 @@ export default function EscalationPanel({ caseData, onTakeOver, compact = false 
     </div>
   )
 }
+
+

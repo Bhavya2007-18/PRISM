@@ -1,4 +1,4 @@
-import { PRISM_STATE_CONFIG as PHASE_CONFIG } from '../config/prismState'
+﻿import { PRISM_STATE_CONFIG as PHASE_CONFIG } from '../config/prismState'
 
 const ACTION_LABELS = {
   ASK_CLARIFICATION:   'Asking for information',
@@ -66,10 +66,10 @@ export default function IntelligencePanel({ voiceState = 'IDLE', aiState = null,
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
       {/* Header */}
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface-1)', flexShrink: 0 }}>
-        <div className="t-label" style={{ color: 'var(--text-muted)', marginBottom: 6 }}>PRISM INTELLIGENCE</div>
+        <div className="t-label-sm" style={{ marginBottom: 8 }}>PRISM INTELLIGENCE</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 13 }}>{cfg.icon}</span>
-          <span style={{ fontSize: 14, fontWeight: 600, color: sc, letterSpacing: '-0.01em' }}>{cfg.label}</span>
+          <span key={voiceState} className="d-state state-label" style={{ color: sc }}>{cfg.label}</span>
           <span style={{ marginLeft: 'auto', width: 7, height: 7, borderRadius: '50%', background: sc, flexShrink: 0 }} />
         </div>
       </div>
@@ -248,3 +248,4 @@ export default function IntelligencePanel({ voiceState = 'IDLE', aiState = null,
     </div>
   )
 }
+

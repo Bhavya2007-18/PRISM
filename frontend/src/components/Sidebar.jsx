@@ -199,3 +199,4 @@ export function BottomNav({ activeRoute, activeIntraNav, badges }) {
     </nav>
   )
 }
+
