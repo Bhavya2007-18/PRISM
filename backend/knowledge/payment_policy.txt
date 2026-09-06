@@ -1,0 +1,81 @@
+PRISM Payment Policy
+====================
+
+Effective Date: 2026-01-01
+
+1. PAYMENT METHODS
+------------------
+PRISM supports the following payment methods across all platforms:
+  - UPI (Unified Payments Interface): PhonePe, Google Pay (Tez), Paytm, BHIM, Amazon Pay UPI, and any UPI app supporting NPCI standards.
+  - Cards: Visa, Mastercard, RuPay, American Express — both credit and debit.
+  - Net Banking: All major Indian banks (HDFC, ICICI, SBI, Axis, Kotak, etc.).
+  - Wallets: Paytm Wallet, Amazon Pay, Mobikwik, Freecharge.
+  - EMI: Available for orders above ₹3,000 via major credit card providers.
+  - BNPL (Buy Now Pay Later): Simpl, LazyPay, Slice.
+
+2. TRANSACTION STATUS DEFINITIONS
+---------------------------------
+Every payment made on PRISM has one of the following statuses:
+
+  SUCCESS
+    The payment gateway confirmed successful debit from the customer.
+    The order should be marked CONFIRMED shortly after (typically < 1 minute).
+
+  FAILED
+    The payment attempt did not go through. No money was debited.
+    Common reasons: insufficient balance, incorrect CVV, timeout, bank decline.
+
+  PENDING
+    The payment gateway is still awaiting confirmation from the customer's bank.
+    Final status is typically resolved within 30 minutes.
+    Customer should NOT place the same order again while status is PENDING.
+
+  DUPLICATE_SUSPECTED
+    Two SUCCESS transactions, same amount, same customer, within 15 minutes.
+    Automatically flagged by the system. Customer is NOT charged twice permanently;
+    one transaction is reversed within 48 hours.
+
+3. ORDER STATUS AFTER PAYMENT
+-----------------------------
+  CONFIRMED
+    Order is confirmed and will be processed for dispatch.
+
+  NOT_CONFIRMED
+    Payment was SUCCESSFUL but the merchant/order system has not yet acknowledged it.
+    This is the critical "payment deducted, order not confirmed" customer complaint.
+    If NOT_CONFIRMED persists for more than 30 minutes, the AI should escalate to a human specialist.
+
+4. SECURITY AND PRIVACY
+-----------------------
+  - PRISM is PCI-DSS Level 1 compliant.
+  - Full card numbers, CVV, and OTP values are NEVER stored in PRISM systems.
+  - All API calls between PRISM and payment gateways use mutual TLS (mTLS).
+  - Transaction IDs (TX-format) are reference tokens only — they cannot be used to replay or modify a payment.
+  - Sensitive fields in logs are redacted with a [REDACTED] marker.
+
+5. DISPUTE RESOLUTION
+---------------------
+  - A payment-related dispute must be raised within 30 calendar days of the transaction date.
+  - Disputes older than 30 days are handled on a best-effort basis and may require direct bank involvement.
+  - When a customer raises a dispute, the AI first checks the Transaction ID status.
+    - If FAILED: explain no debit happened, ask to retry.
+    - If SUCCESS + CONFIRMED: provide confirmation details.
+    - If SUCCESS + NOT_CONFIRMED: propose escalation.
+    - If PENDING: ask to wait 30 minutes, then re-check.
+
+6. AUTOMATIC ESCALATION TRIGGERS FOR PAYMENT ISSUES
+---------------------------------------------------
+The AI MUST escalate to a human specialist when:
+  1. Payment status is SUCCESS and order status is NOT_CONFIRMED.
+  2. Two transactions exist for the same customer/amount/date within 15 minutes (duplicate suspected).
+  3. The customer explicitly requests to speak to a human ("I want to talk to a human", "connect me to support", etc.).
+  4. Any payment tool / lookup API returns an error or timeout more than once.
+  5. The overall AI confidence score is below 60% for the proposed resolution.
+
+7. CUSTOMER EXPERIENCE GUIDELINES
+---------------------------------
+  - Never blame the customer for a failed or pending transaction.
+  - Always empathize first, then request the Transaction ID.
+  - Never invent or guess a transaction status — always check via the check_transaction tool.
+  - If something is unclear, escalate rather than mislead.
+  - Never share another customer's transaction details under any circumstances.

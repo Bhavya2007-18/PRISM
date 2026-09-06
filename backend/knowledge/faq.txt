@@ -1,0 +1,32 @@
+PRISM Customer Support — Frequently Asked Questions
+=====================================================
+
+Q: How do I check my payment status?
+A: To check your payment status, please provide your Transaction ID (TX followed by numbers, e.g. TX48291). The agent will immediately look up your transaction and tell you whether it was successful, failed, or pending.
+
+Q: My money was deducted but the order was not confirmed. What should I do?
+A: If your payment was deducted but order status is NOT CONFIRMED, please share your Transaction ID with the agent. The agent will investigate and if the issue cannot be resolved immediately, a human support specialist will take over your case.
+
+Q: How long does a refund take?
+A: Refunds are typically processed within 5-7 working days from the date the refund request is approved. The amount is credited back to the original payment method (credit/debit card, UPI, wallet, etc.).
+
+Q: What is a duplicate charge?
+A: A duplicate charge occurs when the same transaction amount is debited twice for a single order. If you see two identical charges for one purchase, please provide both Transaction IDs so the agent can verify and escalate to a specialist.
+
+Q: Can I cancel my order after payment?
+A: Cancellation is possible within 24 hours of payment if the order has not yet been dispatched. After 24 hours, cancellation depends on the order status — please share your order ID or Transaction ID and the agent will check eligibility.
+
+Q: Which payment methods are supported?
+A: PRISM supports all major payment methods: UPI (PhonePe, Google Pay, Paytm), credit cards (Visa, Mastercard, RuPay), debit cards, net banking, and popular e-wallets.
+
+Q: How do I contact customer support?
+A: You are already talking to PRISM, our AI support agent. If PRISM cannot resolve your issue, you will be automatically connected to a human specialist — you do not need to call or email separately. Your conversation history and all transaction details will be shared with the human agent so you won't need to repeat anything.
+
+Q: My payment shows SUCCESS but I did not get a confirmation SMS/email.
+A: If your payment status is SUCCESS but you didn't receive a confirmation, please wait up to 30 minutes — sometimes delivery is delayed. If after 30 minutes you still haven't received anything, share your Transaction ID and the agent will verify and resend the confirmation, or escalate if necessary.
+
+Q: Is my payment information safe?
+A: Yes. All payments are processed through secure, PCI-DSS compliant gateways. PRISM never stores full card numbers, CVV, or OTP values. Your sensitive payment information is handled only by certified payment processors.
+
+Q: What languages does PRISM speak?
+A: PRISM currently supports English, Hindi, and Hinglish (a mix of Hindi and English). More languages (Tamil, Bengali, Telugu, Marathi, Gujarati, Kannada, Malayalam, Punjabi) will be added soon.

@@ -1,21 +1,22 @@
+# ENGINE: IntelligenceEngine + CoreOrchestrator
 """
-PRISM Voice Agent — the live conversation brain.
+PRISM Voice Agent — Intelligence Engine Core
 
-A warm, human-like voice/text assistant built on plain LiteLLM tool-calling
-(via llm_service.prism_llm_call). The LLM handles language and phrasing; it may
-*propose* escalation by calling the `escalate_to_human` tool, but the final
-ESCALATE / CONTINUE decision is made by the deterministic policy gate
-(policy.evaluate_escalation) — see policy.py. This is what preserves PRISM's
-"the LLM does not have unrestricted authority over escalation" differentiator
-while keeping the fluid LLM conversation.
+The live conversation brain for PRISM. Processes each user turn through:
 
-    user turn -> LLM (with tools) -> action proposal -> DETERMINISTIC POLICY -> reply
+    User turn
+        → LLM (with tools) — proposes action + language
+        → DETERMINISTIC POLICY GATE (policy.py) — approves / rejects / modifies
+        → Tool execution (tools.py)
+        → Verification
+        → Response
 
-(This module was previously named `pipecat_agent.py`; it never actually used the
-Pipecat framework. It has been renamed and the misleading framing removed.)
+This module is the IntelligenceEngine in PRISM's canonical 7-engine architecture.
+The LLM handles language and action proposals. The policy engine handles decisions.
 """
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List
 
@@ -23,6 +24,34 @@ from context import get_or_create_case, CaseState, escalated_cases
 from tools import check_transaction as db_check_transaction, create_escalation_ticket
 from llm_service import prism_llm_call
 from policy import evaluate_escalation, PolicyDecision
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PRISM CANONICAL ARCHITECTURE — 7 Engines
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#  ┌─────────────────┐
+#  │   PRISM CORE    │  ← CoreOrchestrator (this module + main.py)
+#  └────────┬────────┘
+#           │
+#  ┌────────┼────────────────────────────────────────┐
+#  ▼        ▼                                         ▼
+#
+# VOICE ENGINE          INTELLIGENCE ENGINE       ACTION ENGINE
+# vad_service.py        voice_agent.py           tools.py
+# asr_service.py        context.py               tool_registry.py (→ ticket 13)
+# audio_pipeline.py     intent_engine.py (→13)   adapters/ (→ ticket 54)
+# (→ ticket 4)          missing_info.py (→11)
+#                       planning.py (→12)
+#
+#           │
+#           ▼
+#
+# POLICY ENGINE          HUMAN SUPPORT ENGINE    PLATFORM ENGINE
+# policy.py              main.py /cases          main.py /auth
+# decision.py            context.py escalations  database (→ ticket 30)
+# confidence.py                                  audit_log (→ ticket 32)
+#
+# ═══════════════════════════════════════════════════════════════════════════
 
 logger = logging.getLogger(__name__)
 
@@ -48,42 +77,47 @@ CONVERSATIONAL RULES (ACT LIKE A WARM, HELPFUL HUMAN ASSISTANT):
 
 def get_tool_schemas(case: CaseState) -> List[Dict[str, Any]]:
     """Return OpenAI-format tool definitions available to the agent."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "check_transaction",
-                "description": "Look up a payment transaction by its ID (e.g. TX48291). Returns payment status, order status, amount, and timestamp.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "transaction_id": {
-                            "type": "string",
-                            "description": "The transaction ID, e.g. TX48291"
-                        }
-                    },
-                    "required": ["transaction_id"]
+    try:
+        from tool_registry import registry
+        return registry.get_schemas(case)
+    except Exception:
+        # Fallback to hardcoded schemas if registry unavailable
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_transaction",
+                    "description": "Look up a payment transaction by its ID (e.g. TX48291). Returns payment status, order status, amount, and timestamp.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "transaction_id": {
+                                "type": "string",
+                                "description": "The transaction ID, e.g. TX48291"
+                            }
+                        },
+                        "required": ["transaction_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "escalate_to_human",
+                    "description": "Propose escalating the case to a human support specialist when there is an unconfirmed payment, duplicate charge concern, tool failure, or when the customer requests it. A deterministic policy validates every proposal before the handoff actually happens.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reason": {
+                                "type": "string",
+                                "description": "Detailed reason for escalating to a human specialist."
+                            }
+                        },
+                        "required": ["reason"]
+                    }
                 }
             }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "escalate_to_human",
-                "description": "Propose escalating the case to a human support specialist when there is an unconfirmed payment, duplicate charge concern, tool failure, or when the customer requests it. A deterministic policy validates every proposal before the handoff actually happens.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reason": {
-                            "type": "string",
-                            "description": "Detailed reason for escalating to a human specialist."
-                        }
-                    },
-                    "required": ["reason"]
-                }
-            }
-        }
-    ]
+        ]
 
 
 def execute_tool(name: str, args: dict, case: CaseState) -> dict:
@@ -256,15 +290,80 @@ async def run_agent_turn(channel: str, incoming_messages: List[dict]) -> dict:
     case.last_activity_at = datetime.utcnow().isoformat()
 
     _record_user_turn(case, incoming_messages)
+
+    # Interruption detection: if user spoke while AI was speaking,
+    # mark interrupted and reset speaking state
+    if getattr(case, 'barge_in_active', False):
+        case.barge_in_active = False
+        case.interrupted = True
+        case.interruption_count = getattr(case, 'interruption_count', 0) + 1
+        # Truncate current plan to completed steps
+        current_plan = getattr(case, 'current_plan', None)
+        if current_plan and hasattr(current_plan, 'truncate_to_current'):
+            current_plan.truncate_to_current()
+        logger.info(f"[PRISM Agent] Interruption detected (total: {case.interruption_count})")
+
     _pre_extract(case)
 
-    system_messages = [
-        {"role": "system", "content": PRISM_VOICE_ASSISTANT_SYSTEM_PROMPT},
-        {"role": "system", "content": f"CURRENT CASE CONTEXT: {case.to_prompt_summary()}"},
-    ]
+    # ── Memory: remember noteworthy short-term facts ────────────────────
+    try:
+        from memory_manager import get_memory_manager
+        mm = get_memory_manager()
+        last_user_text = case.last_user_text or ""
+        # Extract simple user facts heuristically
+        extracted_facts: Dict[str, Any] = {}
+        name_match = re.search(r"\bmy name is\s+([A-Za-z ]{2,30})", last_user_text, re.IGNORECASE)
+        if name_match:
+            extracted_facts["user_name"] = name_match.group(1).strip()
+        lang_match = re.search(r"\b(hindi|english|hinglish)\b", last_user_text, re.IGNORECASE)
+        if lang_match:
+            extracted_facts["preferred_language"] = lang_match.group(1).lower()
+        if extracted_facts:
+            mm.maybe_remember_user_facts(case, extracted_facts)
+    except Exception as mem_e:
+        logger.warning(f"[PRISM Agent] Memory remember skipped: {mem_e}")
+
+    # ── RAG: search knowledge base if enabled ───────────────────────────
+    retrieved_knowledge: Optional[List[str]] = None
+    rag_citations: List[Dict[str, Any]] = []
+    enable_rag = os.getenv("ENABLE_RAG", "false").lower() == "true"
+    if enable_rag and last_user_text:
+        try:
+            from knowledge_base import get_knowledge_base
+            kb = get_knowledge_base()
+            results = kb.search(last_user_text, top_k=2)
+            if results:
+                retrieved_knowledge = []
+                for text, score, source in results:
+                    retrieved_knowledge.append(f"[Source: {source}] {text}")
+                    rag_citations.append({"text": text, "source": source, "score": score})
+        except Exception as rag_e:
+            logger.warning(f"[PRISM Agent] RAG search failed: {rag_e}")
+
+    # Save rag citations for this turn on case (exposed in _build_ai_state)
+    case.rag_citations = rag_citations
+
+    # ── Context assembly ────────────────────────────────────────────────
     conversation = [m for m in incoming_messages if m.get("role") != "system"]
-    full_messages = system_messages + conversation
     tools = get_tool_schemas(case)
+
+    try:
+        from context_engine import ContextManager
+        ctx = ContextManager()
+        full_messages = ctx.build_context(
+            system_prompt=PRISM_VOICE_ASSISTANT_SYSTEM_PROMPT,
+            case=case,
+            incoming_messages=incoming_messages,
+            retrieved_knowledge=retrieved_knowledge,
+            last_user_text=case.last_user_text,
+        )
+    except Exception as ctx_e:
+        logger.warning(f"[PRISM Agent] ContextManager fallback: {ctx_e}")
+        system_messages = [
+            {"role": "system", "content": PRISM_VOICE_ASSISTANT_SYSTEM_PROMPT},
+            {"role": "system", "content": f"CURRENT CASE CONTEXT: {case.to_prompt_summary()}"},
+        ]
+        full_messages = system_messages + conversation
 
     # ── Primary LLM call ────────────────────────────────────────────────
     try:
@@ -277,8 +376,12 @@ async def run_agent_turn(channel: str, incoming_messages: List[dict]) -> dict:
         )
     except Exception as e:
         logger.error(f"[PRISM Agent] LLM invocation error: {e}")
-        reply = _generate_human_fallback_reply(case.last_user_text, case)
-        case.conversation_history.append({"role": "assistant", "content": reply})
+        from error_recovery import ErrorRecoveryEngine, FailureType
+        recovery = ErrorRecoveryEngine().recover(FailureType.LLM, case, attempt=1)
+        reply = recovery.reply
+        from datetime import datetime
+        case.conversation_history.append({"role": "assistant", "content": reply, "timestamp": datetime.utcnow().isoformat()})
+        case.transcript_index = len(case.conversation_history)
         return {"content": reply, "tool_executed": None, "escalated": case.escalated,
                 "policy_decision": case.policy_decision}
 

@@ -77,7 +77,7 @@ export default function Agent() {
   const agentMicRef    = useRef(null)
   const convEndRef     = useRef(null)
 
-  const handleAgentAgoraJoin = async (targetChannel = 'prism-demo') => {
+  const handleAgentAgoraJoin = async (targetChannel = null) => {
     try {
       const AGENT_UID = 88888
       const tr = await fetch(getApiUrl('/token?channel='+targetChannel+'&uid='+AGENT_UID))
@@ -377,7 +377,7 @@ export default function Agent() {
               onTakeOver={async id => {
                 try { await fetch(getApiUrl('/cases/'+id+'/takeover'), { method: 'POST' }) } catch {}
                 setCases(p => p.map(c => c.case_id===id ? { ...c, taken_over:true, status:'TAKEN_OVER' } : c))
-                handleAgentAgoraJoin(activeCase?.channel||'prism-demo')
+                handleAgentAgoraJoin(activeCase?.channel || activeCase?.case_id)
               }} />
           </div>
         )}
@@ -386,7 +386,7 @@ export default function Agent() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <div style={{ flex: 1, padding: '8px 12px', background: agentAudioConnected?'var(--ok-bg)':'var(--surface-1)', border: '1px solid '+(agentAudioConnected?'var(--ok-border)':'var(--border)'), borderRadius: 'var(--r-md)', fontSize: 12, color: agentAudioConnected?'var(--ok)':'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 7 }}>
               <span className={'status-dot status-dot--'+(agentAudioConnected?'ok':'muted')} />
-              <span>{agentAudioConnected ? 'Agora connected — '+(activeCase?.channel||'prism-demo') : activeCase?.taken_over ? 'Connected' : 'PRISM AI active'}</span>
+              <span>{agentAudioConnected ? 'Agora connected — ' + (activeCase?.channel || activeCase?.case_id || 'unknown') : activeCase?.taken_over ? 'Connected' : 'PRISM AI active'}</span>
             </div>
             {agentAudioConnected && (
               <div style={{ display: 'flex', gap: 6 }}>
@@ -466,6 +466,7 @@ export default function Agent() {
     </div>
   )
 }
+
 
 
 

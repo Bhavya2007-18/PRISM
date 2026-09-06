@@ -7,7 +7,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from context import get_or_create_case, update_case_from_extract, escalated_cases, cases
-from confidence import get_confidence_report, FieldConfidence
+from confidence import get_confidence_report
 from decision import decide, Action
 from tools import check_transaction, create_escalation_ticket
 
@@ -86,15 +86,18 @@ print(f"    ✓ {action}: {reason}")
 # ── Test 7: Confidence report ────────────────────────────────────────
 print("\n[7] Confidence report")
 report = get_confidence_report(case)
-assert report.fields["payment_status"] == FieldConfidence.HIGH
-assert report.fields["transaction_id"] == FieldConfidence.HIGH
-assert report.fields["amount"] == FieldConfidence.HIGH
-assert report.fields["duplicate_charge"] == FieldConfidence.CRITICAL_UNKNOWN
-# With 4 HIGH fields and 1 CRITICAL_UNKNOWN, score is ~76 — still escalates
-# because duplicate_charge == "UNKNOWN" is an explicit decision-engine trigger
-assert "duplicate_charge" in report.blocking_fields, "duplicate_charge should be a blocking field"
-print(f"    ✓ payment_status: {report.fields['payment_status'].value}")
-print(f"    ✓ duplicate_charge: {report.fields['duplicate_charge'].value}")
+# New numeric scoring: transaction field covers transaction_id + payment_status
+# resolution field covers order status resolution
+assert isinstance(report.fields["transaction"], float), "transaction score should be a float"
+assert isinstance(report.fields["resolution"], float), "resolution score should be a float"
+assert isinstance(report.fields["intent"], float), "intent score should be a float"
+# duplicate_charge UNKNOWN means transaction confidence should be < 0.5
+assert report.fields["transaction"] < 0.5, f"Expected transaction < 0.5 (duplicate risk), got {report.fields['transaction']}"
+# blocking_fields contains fields with score < 0.3
+assert isinstance(report.blocking_fields, list)
+print(f"    ✓ intent: {report.fields['intent']}")
+print(f"    ✓ transaction: {report.fields['transaction']}")
+print(f"    ✓ resolution: {report.fields['resolution']}")
 print(f"    ✓ Blocking fields: {report.blocking_fields}")
 print(f"    ✓ Display score: {report.display_score}% ({report.overall_label})")
 

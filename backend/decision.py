@@ -1,3 +1,4 @@
+# ENGINE: PolicyEngine (deterministic decision layer)
 """
 PRISM Decision Engine — pure deterministic logic, no LLM.
 

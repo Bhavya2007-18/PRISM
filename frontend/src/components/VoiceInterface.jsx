@@ -8,8 +8,6 @@ import PrismCore from './PrismCore'
 import TranscriptConsole from './TranscriptConsole'
 import IntelligencePanel from './IntelligencePanel'
 
-const CHANNEL = 'prism-demo'
-const TEXT_CHANNEL = 'prism-text'
 const AGENT_UID = 12345
 AgoraRTC.setLogLevel(3)
 
@@ -58,6 +56,23 @@ export default function VoiceInterface() {
   const sessionRef        = useRef(null)
   const userUidRef        = useRef(Math.floor(Math.random() * 90000) + 10000)
   const chatEndRef        = useRef(null)
+  // ── Dynamic channel per session ─────────────────────────────────────
+  // Unique voice channel generated once on component mount.
+  // TEXT_CHANNEL uses a stable per-session id so chat and voice share context.
+  const voiceChannelRef = useRef(null)    // set on first connect
+  const textChannelRef  = useRef(null)    // set on first connect
+  const getVoiceChannel = () => {
+    if (!voiceChannelRef.current) {
+      voiceChannelRef.current = 'prism-' + Math.random().toString(36).slice(2, 14)
+    }
+    return voiceChannelRef.current
+  }
+  const getTextChannel = () => {
+    if (!textChannelRef.current) {
+      textChannelRef.current = 'prism-text-' + Math.random().toString(36).slice(2, 10)
+    }
+    return textChannelRef.current
+  }
   const greetingPlayedRef = useRef(false)
 
   useEffect(() => {
@@ -84,11 +99,11 @@ export default function VoiceInterface() {
     let mounted = true
     const poll = async () => {
       try {
-        const r = await fetch(getApiUrl('/debug/case/' + TEXT_CHANNEL))
+        const r = await fetch(getApiUrl('/state/' + getTextChannel()))
         const ct = r.headers.get('content-type') || ''
         if (r.ok && ct.includes('application/json')) {
           const d = await r.json()
-          if (d.case?.taken_over && mounted) { setTakenOver(true); setMessages(p => [...p, { role:'system', content:'A human agent has taken over.' }]) }
+          if (d.taken_over && mounted) { setTakenOver(true); setMessages(p => [...p, { role:'system', content:'A human agent has taken over.' }]) }
         }
       } catch {}
     }
@@ -101,7 +116,7 @@ export default function VoiceInterface() {
     let mounted = true
     const poll = async () => {
       try {
-        const r = await fetch(getApiUrl('/state/' + CHANNEL))
+        const r = await fetch(getApiUrl('/state/' + getVoiceChannel()))
         const ct = r.headers.get('content-type') || ''
         if (!r.ok || !ct.includes('application/json')) return
         const d = await r.json(); if (!mounted) return
@@ -152,12 +167,12 @@ export default function VoiceInterface() {
       client.on('user-published', async (u,mt) => { await client.subscribe(u,mt); if (mt==='audio') { u.audioTrack?.play(); setAgentActive(true) } })
       client.on('user-unpublished', (u,mt) => { if (mt==='audio') setAgentActive(false) })
       if (mode === 'voice') {
-        const tr = await fetch(getApiUrl('/token?channel=' + CHANNEL + '&uid=' + uid))
+        const tr = await fetch(getApiUrl('/token?channel=' + getVoiceChannel() + '&uid=' + uid))
         if (!tr.ok) throw new Error('Token fetch failed')
         const ct = tr.headers.get('content-type') || ''
         if (!ct.includes('application/json')) throw new Error('Backend offline — start it first')
         const td = await tr.json()
-        await client.join(td.app_id, CHANNEL, td.token, uid)
+        await client.join(td.app_id, getVoiceChannel(), td.token, uid)
         const mic = await AgoraRTC.createMicrophoneAudioTrack({ encoderConfig:'speech_standard' })
         micTrackRef.current = mic; await client.publish([mic])
       }
@@ -165,7 +180,7 @@ export default function VoiceInterface() {
         const lc = getLanguageConfig(selectedLanguage)
         const sr = await fetch(getApiUrl('/session/start'), {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ channel: mode==='chat' ? TEXT_CHANNEL : CHANNEL, user_uid:uid, language:lc.name, locale:lc.locale }),
+          body: JSON.stringify({ channel: mode==='chat' ? getTextChannel() : getVoiceChannel(), user_uid:uid, language:lc.name, locale:lc.locale }),
         })
         if (sr.ok) sessionRef.current = await sr.json()
       } catch {}
@@ -184,10 +199,15 @@ export default function VoiceInterface() {
     try {
       if (sessionRef.current?.agent_id) await fetch(getApiUrl('/session/stop'), {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ agent_id:sessionRef.current.agent_id, channel: mode==='chat' ? TEXT_CHANNEL : CHANNEL }),
+        body: JSON.stringify({ agent_id:sessionRef.current.agent_id, channel: mode==='chat' ? getTextChannel() : getVoiceChannel() }),
       }).catch(()=>{})
       micTrackRef.current?.close(); await clientRef.current?.leave().catch(()=>{})
-    } catch {} finally { clientRef.current=null; micTrackRef.current=null; sessionRef.current=null }
+    } catch {} finally {
+      clientRef.current=null; micTrackRef.current=null; sessionRef.current=null
+      // Reset channel refs so next session gets a fresh unique channel
+      voiceChannelRef.current = null
+      textChannelRef.current  = null
+    }
   }
 
   function getDemoReply(text) {
@@ -206,7 +226,7 @@ export default function VoiceInterface() {
       setVoiceState('THINKING')
       const r = await fetch(getApiUrl('/chat'), {
         method:'POST', headers:{'Content-Type':'application/json', Accept:'application/json'},
-        body: JSON.stringify({ message:text, channel:TEXT_CHANNEL, language:selectedLanguage }),
+        body: JSON.stringify({ message:text, channel:getTextChannel(), language:selectedLanguage }),
       })
       if (r.ok) {
         const ct = r.headers.get('content-type') || ''
@@ -474,3 +494,7 @@ export default function VoiceInterface() {
     </div>
   )
 }
+
+
+
+

@@ -39,6 +39,30 @@ class CaseState:
     policy_decision: Optional[str] = None        # "ESCALATE" / "CONTINUE" (last gate result)
     policy_reason: Optional[str] = None
     last_activity_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    # ── Connection state ──────────────────────────────────────────────────
+    connection_state: str = "DISCONNECTED"  # CONNECTING/CONNECTED/RECONNECTING/DISCONNECTED
+    reconnect_attempts: int = 0
+    agora_agent_id: Optional[str] = None   # the running Agora Conversational AI agent_id
+    # ── New state flags (used by derive_voice_state) ─────────────────────────
+    planning: bool = False       # Planner is building a plan
+    verifying: bool = False      # VerificationEngine is checking result
+    resolved: bool = False       # conversation successfully resolved
+    failed: bool = False         # unrecoverable failure
+    session_ended: bool = False  # session explicitly ended
+    current_plan: Optional[object] = None   # Plan from planning.py
+    verification_status: Optional[dict] = None  # Per-tool verification results from VerificationEngine
+    # ── Barge-in / interruption tracking ─────────────────────────────────────
+    barge_in_active: bool = False       # True when user speaks during SPEAKING state
+    interrupted: bool = False           # True when current AI turn was interrupted
+    interruption_count: int = 0         # total interruptions this session
+    # ── Transcript tracking ───────────────────────────────────────────────────
+    partial_transcript: Optional[str] = None    # live partial text during speech
+    transcript_index: int = 0                   # increments on each new entry
+    # ── Short-term memory ─────────────────────────────────────────────────────
+    short_term_memory: dict = field(default_factory=dict)  # per-session ephemeral memory
+    # ── Memory permissions ────────────────────────────────────────────────────
+    memory_consent: bool = False                # user consent for long-term memory
+    rag_citations: list = field(default_factory=list)   # RAG sources cited this turn
 
     def to_prompt_summary(self) -> str:
         known = []

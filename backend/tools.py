@@ -1,3 +1,4 @@
+﻿# ENGINE: ActionEngine
 """
 PRISM Tools — mock external APIs and tool schemas.
 """
@@ -44,7 +45,8 @@ MOCK_TRANSACTIONS = {
         "status": "SUCCESS",
         "order_status": "NOT_CONFIRMED",
         "timestamp": "2026-08-30T10:23:41Z",
-        "merchant": "ShopEasy India"
+        "merchant": "ShopEasy India",
+        "scenario": "payment_success_order_not_confirmed",
     },
     "TX00001": {
         "transaction_id": "TX00001",
@@ -52,7 +54,8 @@ MOCK_TRANSACTIONS = {
         "status": "FAILED",
         "order_status": "NOT_CONFIRMED",
         "timestamp": "2026-08-30T09:10:00Z",
-        "merchant": "QuickMart"
+        "merchant": "QuickMart",
+        "scenario": "payment_failed",
     },
     "TX99999": {
         "transaction_id": "TX99999",
@@ -60,7 +63,72 @@ MOCK_TRANSACTIONS = {
         "status": "SUCCESS",
         "order_status": "CONFIRMED",
         "timestamp": "2026-08-30T08:55:00Z",
-        "merchant": "TechBazaar"
+        "merchant": "TechBazaar",
+        "scenario": "fully_resolved",
+    },
+    "TX12345": {
+        "transaction_id": "TX12345",
+        "amount": 899,
+        "status": "PENDING",
+        "order_status": "NOT_CONFIRMED",
+        "timestamp": "2026-08-30T11:00:00Z",
+        "merchant": "FashionHub",
+        "scenario": "pending_transaction",
+    },
+    "TX77777": {
+        "transaction_id": "TX77777",
+        "amount": 1499,
+        "status": "SUCCESS",
+        "order_status": "NOT_CONFIRMED",
+        "timestamp": "2026-08-30T10:20:00Z",
+        "merchant": "ShopEasy India",
+        "duplicate": True,
+        "scenario": "possible_duplicate_charge",
+    },
+    "TX55555": {
+        "transaction_id": "TX55555",
+        "amount": 3499,
+        "status": "SUCCESS",
+        "order_status": "CONFIRMED",
+        "timestamp": "2026-08-29T14:30:00Z",
+        "merchant": "ElectroZone",
+        "scenario": "fully_resolved_large",
+    },
+    "TX66666": {
+        "transaction_id": "TX66666",
+        "amount": 249,
+        "status": "FAILED",
+        "order_status": "NOT_CONFIRMED",
+        "timestamp": "2026-08-30T07:45:00Z",
+        "merchant": "FoodDash",
+        "scenario": "low_value_failed",
+    },
+    "TX11111": {
+        "transaction_id": "TX11111",
+        "amount": 799,
+        "status": "SUCCESS",
+        "order_status": "CONFIRMED",
+        "timestamp": "2026-08-28T16:00:00Z",
+        "merchant": "BookWorm",
+        "scenario": "old_resolved_transaction",
+    },
+    "TX22222": {
+        "transaction_id": "TX22222",
+        "amount": 5999,
+        "status": "SUCCESS",
+        "order_status": "NOT_CONFIRMED",
+        "timestamp": "2026-08-30T12:00:00Z",
+        "merchant": "LuxuryGoods",
+        "scenario": "high_value_unconfirmed",
+    },
+    "TX33333": {
+        "transaction_id": "TX33333",
+        "amount": 1200,
+        "status": "PENDING",
+        "order_status": "NOT_CONFIRMED",
+        "timestamp": "2026-08-30T09:30:00Z",
+        "merchant": "HomeDecor",
+        "scenario": "pending_high_value",
     },
 }
 
@@ -74,6 +142,60 @@ def check_transaction(transaction_id: str) -> dict:
         "success": False,
         "error": "transaction_not_found",
         "message": f"No transaction found with ID {transaction_id}"
+    }
+
+
+def get_order(order_id: str) -> dict:
+    """Mock order lookup by order ID. Returns order details or error."""
+    # Derive a plausible order from transaction data
+    order_id_upper = order_id.strip().upper()
+    # Try to find a transaction with matching order context
+    for tx in MOCK_TRANSACTIONS.values():
+        if tx.get("order_status") == "CONFIRMED":
+            return {
+                "success": True,
+                "order_id": order_id_upper,
+                "status": "CONFIRMED",
+                "estimated_delivery": "2026-09-02",
+                "merchant": tx.get("merchant", "Unknown"),
+                "amount": tx.get("amount"),
+            }
+    return {
+        "success": False,
+        "error": "order_not_found",
+        "message": f"No order found with ID {order_id}",
+    }
+
+
+def refund_status(transaction_id: str) -> dict:
+    """Mock refund status lookup. Returns refund status or error."""
+    tx = MOCK_TRANSACTIONS.get(transaction_id.strip().upper())
+    if not tx:
+        return {"success": False, "error": "transaction_not_found", "message": f"Transaction {transaction_id} not found"}
+    if tx.get("status") == "FAILED":
+        return {
+            "success": True,
+            "refund_status": "NOT_APPLICABLE",
+            "message": "Original transaction failed — no charge to refund.",
+        }
+    return {
+        "success": True,
+        "transaction_id": tx["transaction_id"],
+        "refund_status": "ELIGIBLE",
+        "refund_amount": tx.get("amount"),
+        "estimated_days": 5,
+        "message": "Refund can be initiated. Processing time: 5-7 business days.",
+    }
+
+
+def verify_identity(identifier: str) -> dict:
+    """Mock identity verification stub. Always returns verified in demo."""
+    return {
+        "success": True,
+        "verified": True,
+        "identifier": identifier,
+        "method": "demo_bypass",
+        "message": "Identity verified (demo mode).",
     }
 
 
@@ -123,7 +245,7 @@ def create_escalation_ticket(case: "CaseState", reason: str) -> dict:
         "order_status": case.order_status,
         "duplicate_charge": case.duplicate_charge,
         # ── Confidence ───────────────────────────────────────────────
-        "confidence_fields": {k: v.value for k, v in report.fields.items()},
+        "confidence_fields": {k: round(float(v), 2) if isinstance(v, float) else str(v) for k, v in report.fields.items()},
         "confidence_display": report.display_score,
         "confidence_label": report.overall_label,
         # ── Lists ────────────────────────────────────────────────────
@@ -133,6 +255,8 @@ def create_escalation_ticket(case: "CaseState", reason: str) -> dict:
         "summary": issue_summary,
         # ── Conversation (useful for "take over" context) ────────────
         "conversation_history": case.conversation_history,
+        # ── Routing (for human agent Agora join) ─────────────────────────────
+        "channel": getattr(case, "agora_channel", None) or case.channel,
     }
 
     return ticket
@@ -192,3 +316,4 @@ def _generate_summary(case: "CaseState") -> str:
 
     summary = " ".join(p for p in parts if p)
     return summary or "Customer support case requiring human review."
+

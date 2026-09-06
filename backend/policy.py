@@ -1,3 +1,4 @@
+# ENGINE: PolicyEngine
 """
 PRISM Deterministic Policy Gate.
 
@@ -20,6 +21,10 @@ from typing import TYPE_CHECKING
 from decision import decide, Action
 from confidence import get_confidence_report
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from context import CaseState
 
@@ -31,6 +36,17 @@ class PolicyDecision:
     reason: str                   # human-readable rationale
     llm_proposed: bool            # did the LLM propose escalation this turn?
     checks: dict = field(default_factory=dict)   # transparency: the individual gate checks
+    approved_actions: list = field(default_factory=list)   # NEW
+    denied_actions: list = field(default_factory=list)     # NEW
+    modification_reason: str = ""                           # NEW
+
+    def get_policy_summary(self) -> dict:
+        """Safe representation for frontend (no internal details)."""
+        return {
+            "decision": self.decision,
+            "approved": self.approved,
+            "reason": self.reason,
+        }
 
 
 def _gate_checks(case: "CaseState") -> dict:
@@ -68,13 +84,31 @@ def evaluate_escalation(case: "CaseState", llm_proposed: bool, proposed_reason: 
     checks = _gate_checks(case)
     action, det_reason = decide(case)
 
+    # New rule: user explicitly requested human → ALWAYS escalate
+    # (This duplicates the decide() check but makes the policy gate authoritative)
+    if case.user_requested_human and not case.escalated:
+        logger.info(f"[PRISM][PolicyEngine][AUDIT] ESCALATE: user_requested_human=True channel={case.channel}")
+        return PolicyDecision(
+            decision="ESCALATE",
+            approved=True,
+            reason="Customer explicitly requested human assistance",
+            llm_proposed=llm_proposed,
+            checks=checks,
+            approved_actions=["escalate_to_human"],
+        )
+
     if action == Action.ESCALATE:
+        logger.info(
+            f"[PRISM][PolicyEngine][AUDIT] ESCALATE approved llm_proposed={llm_proposed} "
+            f"reason={det_reason[:80]} channel={case.channel}"
+        )
         return PolicyDecision(
             decision="ESCALATE",
             approved=True,
             reason=det_reason,
             llm_proposed=llm_proposed,
             checks=checks,
+            approved_actions=["escalate_to_human"],
         )
 
     if llm_proposed:
@@ -87,10 +121,19 @@ def evaluate_escalation(case: "CaseState", llm_proposed: bool, proposed_reason: 
     else:
         reason = f"No escalation required (next action: {action.value})."
 
+    logger.info(
+        f"[PRISM][PolicyEngine][AUDIT] decision={action.value} "
+        f"llm_proposed={llm_proposed} confidence={checks.get('confidence_score')} "
+        f"channel={case.channel}"
+    )
+
+    denied = ["escalate_to_human"] if llm_proposed else []
     return PolicyDecision(
         decision="CONTINUE",
         approved=False,
         reason=reason,
         llm_proposed=llm_proposed,
         checks=checks,
+        denied_actions=denied,
+        modification_reason=reason if llm_proposed else "",
     )

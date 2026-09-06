@@ -616,6 +616,11 @@ body {
 .voice-orb--understanding { background: var(--surface-0); border: 1.5px solid var(--border-strong); box-shadow: var(--shadow-sm); animation: orb-scan 2s linear infinite; }
 .voice-orb--human_connected { background: var(--ok-bg); border: 1.5px solid var(--ok-border); }
 .voice-orb--error { background: var(--danger-bg); border: 1.5px solid var(--danger-border); }
+.voice-orb--planning  { background: var(--surface-0); border: 1.5px solid var(--border-strong); box-shadow: var(--shadow-md); animation: orb-think 2.5s ease-in-out infinite; }
+.voice-orb--verifying { background: var(--surface-0); border: 1.5px dashed var(--border-strong); animation: orb-act 1.5s linear infinite; }
+.voice-orb--resolved  { background: var(--ok-bg); border: 1.5px solid var(--ok-border); }
+.voice-orb--failed    { background: var(--danger-bg); border: 1.5px solid var(--danger-border); }
+.voice-orb--ended     { background: var(--surface-2); border: 1.5px solid var(--border); opacity: 0.6; }
 @keyframes orb-breathe  { 0%,100%{box-shadow:var(--shadow-sm)} 50%{box-shadow:var(--shadow-md),0 0 0 8px rgba(0,0,0,0.02)} }
 @keyframes orb-think    { 0%,100%{transform:scale(1)} 50%{transform:scale(0.975)} }
 @keyframes orb-act      { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }

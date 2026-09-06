@@ -2,6 +2,8 @@
 PRISM Backend — FastAPI application
 Main entry point with all API endpoints.
 """
+import hashlib
+import hmac
 import os
 import sys
 import base64
@@ -10,12 +12,14 @@ import re
 import time
 import uuid
 import asyncio
+import logging
 
 # Make sibling modules importable whether launched as `uvicorn backend.main:app`
 # (from the repo root, per render.yaml) or `uvicorn main:app` (from backend/).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, HTTPException, Request, Query, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, Query, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -25,7 +29,132 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+logger = logging.getLogger("prism.main")
+
+# ── Auth configuration ────────────────────────────────────────────────────
+# For demo/development: simple shared credentials
+# In production: replace with a real auth provider (Clerk, Auth0, Supabase)
+DEMO_AGENT_USERNAME = os.getenv("AGENT_USERNAME", "agent")
+DEMO_AGENT_PASSWORD = os.getenv("AGENT_PASSWORD", "prism2024")
+SECRET_KEY = os.getenv("JWT_SECRET", "prism-dev-secret-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8  # 8 hours
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
+
+
+def create_access_token(data: dict) -> str:
+    """Create a JWT access token."""
+    try:
+        from jose import jwt
+        from datetime import datetime, timedelta
+        to_encode = data.copy()
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        to_encode.update({"exp": expire})
+        return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    except ImportError:
+        # python-jose not installed — return a simple token for demo
+        return base64.b64encode(json.dumps(data).encode()).decode()
+
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> Optional[dict]:
+    """Decode and validate JWT. Returns user dict or None if invalid."""
+    if not token:
+        return None
+    try:
+        from jose import jwt, JWTError
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except Exception:
+        # Fall back to base64 demo token
+        try:
+            data = json.loads(base64.b64decode(token).decode())
+            return data
+        except Exception:
+            return None
+
+
+def require_auth(user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Dependency that requires authentication. Raises 401 if not authenticated."""
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+# ── RBAC roles ────────────────────────────────────────────────────────────
+class UserRole:
+    USER       = "USER"
+    AGENT      = "AGENT"
+    SUPERVISOR = "SUPERVISOR"
+    ADMIN      = "ADMIN"
+    OWNER      = "OWNER"
+
+ROLE_HIERARCHY = {
+    UserRole.USER:       0,
+    UserRole.AGENT:      1,
+    UserRole.SUPERVISOR: 2,
+    UserRole.ADMIN:      3,
+    UserRole.OWNER:      4,
+}
+
+
+def require_role(min_role: str):
+    """
+    Dependency factory: require the authenticated user to have at least min_role.
+    Usage: Depends(require_role(UserRole.AGENT))
+    """
+    def _checker(user: Optional[dict] = Depends(get_current_user)) -> dict:
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        user_role = user.get("role", UserRole.USER)
+        if ROLE_HIERARCHY.get(user_role, 0) < ROLE_HIERARCHY.get(min_role, 0):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Requires {min_role} role, but user has {user_role}"
+            )
+        return user
+    return _checker
+
+
+import re as _re
+
+_CHANNEL_PATTERN = _re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+def validate_channel(channel: str) -> str:
+    """Dependency: validate channel name format."""
+    if not _CHANNEL_PATTERN.match(channel):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid channel name. Use only letters, numbers, hyphens and underscores (max 64 chars)."
+        )
+    return channel
+
+
+def sanitize_error(e: Exception) -> str:
+    """
+    Return a safe error message string.
+    Strips file paths, credentials, and internal details from exception messages.
+    Never expose: API keys, file paths, stack traces, internal module names.
+    """
+    msg = str(e)
+    # Remove file path patterns
+    msg = _re.sub(r'[A-Za-z]:\\[^\s"\']+', '[path]', msg)
+    msg = _re.sub(r'/[a-zA-Z0-9_\-./]+\.py', '[module]', msg)
+    # Remove anything that looks like an API key (long alphanumeric strings)
+    msg = _re.sub(r'\b[A-Za-z0-9]{32,}\b', '[redacted]', msg)
+    # Truncate to 200 chars
+    return msg[:200]
+
+
 app = FastAPI(title="PRISM Backend", version="1.0.0")
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Add X-Request-ID header to every request and response."""
+    request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex[:12])
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 frontend_url = os.getenv("FRONTEND_URL", "")
 allowed_origins = [
@@ -47,6 +176,90 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Rate limiting ─────────────────────────────────────────────────────────
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+
+    limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    _RATE_LIMITING_ENABLED = True
+except ImportError:
+    limiter = None
+    _RATE_LIMITING_ENABLED = False
+
+
+def _rate_limit(limit: str):
+    """Returns a rate limit decorator if slowapi is available, else no-op."""
+    if limiter is not None:
+        return limiter.limit(limit)
+    # No-op decorator when slowapi not installed
+    def _noop(func):
+        return func
+    return _noop
+
+
+@app.on_event("startup")
+async def startup_checks():
+    """Validate environment and log service status on startup."""
+    import logging
+    startup_logger = logging.getLogger("prism.startup")
+
+    checks = {
+        "AGORA_APP_ID":           bool(os.getenv("AGORA_APP_ID")),
+        "LLM_API_KEY":            bool(os.getenv("LLM_API_KEY")),
+        "AGORA_CUSTOMER_ID":      bool(os.getenv("AGORA_CUSTOMER_ID")),
+        "JWT_SECRET_custom":      os.getenv("JWT_SECRET", "") not in ("", "prism-dev-secret-change-in-production"),
+        "DEBUG_ENDPOINTS_off":    os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() != "true",
+    }
+
+    startup_logger.info("=" * 60)
+    startup_logger.info("PRISM Backend starting up")
+    startup_logger.info("=" * 60)
+    for key, ok in checks.items():
+        status = "OK" if ok else "WARN"
+        startup_logger.info(f"  [{status}] {key}")
+
+    if not checks["AGORA_APP_ID"]:
+        startup_logger.warning("  AGORA_APP_ID not set — voice sessions will use demo mode")
+    if not checks["LLM_API_KEY"]:
+        startup_logger.warning("  LLM_API_KEY not set — AI responses will use fallback")
+    if not checks["JWT_SECRET_custom"]:
+        startup_logger.warning("  JWT_SECRET is default dev value — change before production!")
+
+    # Initialize database if available
+    try:
+        from database import get_engine, _create_tables_sql
+        if get_engine() is not None:
+            _create_tables_sql()
+            startup_logger.info("  [OK] Database initialized")
+        else:
+            startup_logger.warning("  [WARN] Database unavailable — data will not persist")
+    except Exception as db_e:
+        startup_logger.warning(f"  [WARN] Database init: {sanitize_error(db_e)}")
+
+    # Initialize knowledge base (RAG)
+    enable_rag = os.getenv("ENABLE_RAG", "false").lower() == "true"
+    try:
+        from knowledge_base import get_knowledge_base
+        kb = get_knowledge_base()
+        if enable_rag:
+            chunk_count = kb.load_from_disk()
+            status = kb.status()
+            startup_logger.info(
+                f"  [OK] Knowledge base loaded: {chunk_count} chunks "
+                f"({status['embedding_model'] if status['embeddings_available'] else 'keyword search only'})"
+            )
+        else:
+            startup_logger.info("  [--] Knowledge base ENABLE_RAG=false — passively available")
+    except Exception as kb_e:
+        startup_logger.warning(f"  [WARN] Knowledge base init: {sanitize_error(kb_e)}")
+
+    startup_logger.info("=" * 60)
+
 
 # ── Module-level state ────────────────────────────────────────────────
 # Active Agora agent sessions: channel -> agent_id
@@ -79,15 +292,53 @@ class ChatRequest(BaseModel):
 
 @app.get("/health")
 def health():
+    from audio_pipeline import get_pipeline_health
+    from database import get_db_health
+    pipeline = get_pipeline_health()
+    db_health = get_db_health()
     return {
         "status": "ok",
-        "service": "prism-backend"
+        "service": "prism-backend",
+        "pipeline": pipeline,
+        "database": db_health,
     }
+
+
+# ── /auth ─────────────────────────────────────────────────────────────
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    role: str
+
+
+@app.post("/auth/token", response_model=TokenResponse)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Authenticate and return a JWT access token."""
+    # Demo: single hardcoded agent credential
+    # In production: query user database
+    if (form_data.username == DEMO_AGENT_USERNAME and
+            form_data.password == DEMO_AGENT_PASSWORD):
+        token = create_access_token({
+            "sub": form_data.username,
+            "role": "AGENT",
+            "username": form_data.username,
+        })
+        return TokenResponse(access_token=token, token_type="bearer", role="AGENT")
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+@app.get("/auth/me")
+async def get_me(user: dict = Depends(require_auth)):
+    """Return current authenticated user info."""
+    return {"username": user.get("username"), "role": user.get("role")}
 
 
 @app.get("/chat/test")
 async def chat_test():
     """Debug endpoint — tests LLM connectivity and returns basic connectivity status."""
+    if os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
     llm_base_url = os.getenv("LLM_BASE_URL", "")
     llm_api_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
@@ -125,7 +376,8 @@ async def chat_test():
 # ── /token ────────────────────────────────────────────────────────────
 
 @app.get("/token")
-async def get_token(channel: str = Query(...), uid: int = Query(...)):
+@_rate_limit("10/minute")
+async def get_token(request: Request, channel: str = Query(...), uid: int = Query(...)):
     """Generate an Agora RTC token for the given channel and UID."""
     app_id = os.getenv("AGORA_APP_ID", "")
     app_cert = os.getenv("AGORA_APP_CERTIFICATE", "")
@@ -152,7 +404,7 @@ async def get_token(channel: str = Query(...), uid: int = Query(...)):
             "channel": channel,
             "uid": uid,
             "app_id": app_id,
-            "error": str(e)
+            "error": sanitize_error(e)
         }
 
 
@@ -175,6 +427,7 @@ async def start_session(req: SessionStartRequest):
     if existing and (existing.escalated or existing.taken_over):
         del _cases[req.channel]
     case = get_or_create_case(req.channel)
+    case.connection_state = "CONNECTING"
     case.agora_channel = req.channel
     case.voice_mode = "agora_rtc"
     if req.locale:
@@ -185,6 +438,8 @@ async def start_session(req: SessionStartRequest):
     if not app_id or not customer_id or not customer_secret:
         mock_id = f"demo-agent-{uuid.uuid4().hex[:8]}"
         active_sessions[req.channel] = mock_id
+        case.connection_state = "CONNECTED"
+        case.agora_agent_id = mock_id
         return {
             "agent_id": mock_id,
             "mode": "demo",
@@ -216,7 +471,7 @@ async def start_session(req: SessionStartRequest):
             "token": agent_token,
             "agent_rtc_uid": str(AGENT_UID),
             "remote_rtc_uids": [str(req.user_uid)],
-            "idle_timeout": 60,
+            "idle_timeout": int(os.getenv("AGORA_IDLE_TIMEOUT", "60")),
             "llm": {
                 "url": llm_proxy_url,
                 "api_key": llm_key,
@@ -266,6 +521,8 @@ async def start_session(req: SessionStartRequest):
     data = resp.json()
     agent_id = data.get("agent_id", "")
     active_sessions[req.channel] = agent_id
+    case.connection_state = "CONNECTED"
+    case.agora_agent_id = agent_id
     return {"agent_id": agent_id, "state": data.get("state", "RUNNING"), "channel": req.channel}
 
 
@@ -280,6 +537,11 @@ async def stop_session(req: SessionStopRequest):
 
     active_sessions.pop(req.channel, None)
 
+    from context import cases
+    if req.channel in cases:
+        cases[req.channel].connection_state = "DISCONNECTED"
+        cases[req.channel].session_ended = True
+
     if not app_id or req.agent_id.startswith("demo-"):
         return {"status": "stopped", "mode": "demo"}
 
@@ -292,6 +554,34 @@ async def stop_session(req: SessionStopRequest):
         )
 
     return {"status": "stopped", "agora_status": resp.status_code}
+
+
+# ── /session/status/{channel} ─────────────────────────────────────────
+
+@app.get("/session/status/{channel}")
+async def session_status(channel: str):
+    """Return current connection and session state for a channel."""
+    from context import cases
+    from prism_state import derive_voice_state, PrismState
+
+    if channel not in cases:
+        return {
+            "channel": channel,
+            "connection_state": "DISCONNECTED",
+            "voice_state": PrismState.IDLE.value,
+            "active": False,
+            "agent_id": active_sessions.get(channel),
+        }
+
+    case = cases[channel]
+    return {
+        "channel": channel,
+        "connection_state": getattr(case, "connection_state", "UNKNOWN"),
+        "voice_state": derive_voice_state(case),
+        "active": not case.escalated and not getattr(case, "session_ended", False),
+        "agent_id": active_sessions.get(channel),
+        "reconnect_attempts": getattr(case, "reconnect_attempts", 0),
+    }
 
 
 # ── /mock/transaction/{tx_id} ─────────────────────────────────────────
@@ -313,6 +603,18 @@ async def llm_proxy(request: Request, channel: str = Query(default="prism-demo")
     calling + deterministic policy gate) and streams back the reply as SSE.
     """
     from voice_agent import run_agent_turn
+
+    # Validate Agora shared secret if configured
+    agora_secret = os.getenv("AGORA_LLM_PROXY_SECRET", "")
+    if agora_secret:
+        sig_header = request.headers.get("X-Agora-Signature", "")
+        if not sig_header:
+            raise HTTPException(status_code=401, detail="Missing X-Agora-Signature header")
+        # Agora signs the request body with HMAC-SHA256
+        body_bytes = await request.body()
+        expected = hmac.new(agora_secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig_header, expected):
+            raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
         body = await request.json()
@@ -344,6 +646,7 @@ def _build_ai_state(case, action, reason: str, tool_executed=None, tool_result=N
     phase_map = {
         "ASK": "THINKING", "CONFIRM": "THINKING",
         "TOOL_CALL": "ACTING", "RESOLVE": "SPEAKING", "ESCALATE": "ESCALATING",
+        "FAILED": "FAILED",
     }
     action_label_map = {
         "ASK": "ASK_CLARIFICATION", "CONFIRM": "CONFIRM_INFORMATION",
@@ -377,7 +680,7 @@ def _build_ai_state(case, action, reason: str, tool_executed=None, tool_result=N
         "language": list(case.language) if case.language else [],
         "confidence": report.display_score,
         "confidence_label": report.overall_label,
-        "confidence_fields": {k: v.value for k, v in report.fields.items()},
+        "confidence_fields": {k: round(float(v), 2) if isinstance(v, float) else str(v) for k, v in report.fields.items()},
         "action": action_label,
         "verified": list(case.verified),
         "unverified": list(case.unverified),
@@ -385,6 +688,11 @@ def _build_ai_state(case, action, reason: str, tool_executed=None, tool_result=N
         "tool_status": tool_status,
         "tool_result": safe_tool_result,
         "blocking_fields": report.blocking_fields,
+        # ── RAG citations (sources used to answer this turn) ────────────
+        "rag_citations": getattr(case, "rag_citations", []),
+        # ── Memory consent & summary ────────────────────────────────────
+        "memory_consent": getattr(case, "memory_consent", False),
+        "short_term_memory_keys": list(getattr(case, "short_term_memory", {}).keys()),
         # ── Deterministic policy gate (PRISM's escalation authority) ──────
         "policy_decision": case.policy_decision,
         "policy_reason": case.policy_reason,
@@ -403,46 +711,65 @@ def _safe_transcript(case) -> list:
 
 
 def _streaming_response(model: str, content: str, original: dict = None) -> StreamingResponse:
-    """Return content as an SSE streaming response (Agora expects this format)."""
+    """
+    Return content as an SSE streaming response.
+    Splits response at sentence boundaries for lower perceived TTS latency.
+    Agora expects OpenAI streaming format.
+    """
+    from response_generator import sentence_segment
+
     resp_id = (original or {}).get("id", f"chatcmpl-{uuid.uuid4().hex[:8]}")
     created = (original or {}).get("created", int(time.time()))
 
-    delta_chunk = json.dumps({
-        "id": resp_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {"role": "assistant", "content": content},
-            "finish_reason": None,
-        }]
-    })
-
-    done_chunk = json.dumps({
-        "id": resp_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": "stop",
-        }]
-    })
+    # Split into sentences for streaming — Agora can start TTS on first sentence
+    # while the rest is still being sent
+    sentences = sentence_segment(content) if content else [""]
+    if not sentences:
+        sentences = [content or ""]
 
     async def event_stream():
-        yield f"data: {delta_chunk}\n\n"
+        for i, sentence in enumerate(sentences):
+            chunk = json.dumps({
+                "id": resp_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant" if i == 0 else None,
+                        "content": sentence + (" " if i < len(sentences) - 1 else ""),
+                    },
+                    "finish_reason": None,
+                }]
+            })
+            yield f"data: {chunk}\n\n"
+
+        done_chunk = json.dumps({
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+        })
         yield f"data: {done_chunk}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 # ── /chat (text mode) ─────────────────────────────────────────────────
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
+@_rate_limit("30/minute")
+async def chat(request: Request, req: ChatRequest):
     """
     Text-mode chat endpoint. Runs the same PRISM voice agent as the voice path
     (LLM tool calling + deterministic policy gate), so text and voice behave
@@ -512,6 +839,14 @@ async def takeover_case(case_id: str):
             case.taken_over = True
             break
 
+    # Persist takeover to database
+    try:
+        from database import get_case_repository
+        repo = get_case_repository()
+        repo.save_session(case_id, case_id, "TAKEN_OVER")
+    except Exception:
+        pass
+
     print(f"[PRISM] ✅ Human agent took over case {case_id}")
     return {"status": "taken_over", "case_id": case_id}
 
@@ -521,6 +856,8 @@ async def takeover_case(case_id: str):
 @app.get("/debug/case/{channel}")
 async def debug_case(channel: str):
     """Return current case state for a channel (dev/demo use)."""
+    if os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
     from context import cases
     from confidence import get_confidence_report
     from decision import decide
@@ -553,7 +890,7 @@ async def debug_case(channel: str):
             "last_user_text": case.last_user_text,
         },
         "confidence": {
-            "fields": {k: v.value for k, v in report.fields.items()},
+            "fields": {k: round(float(v), 2) if isinstance(v, float) else str(v) for k, v in report.fields.items()},
             "display_score": report.display_score,
             "label": report.overall_label,
             "blocking_fields": report.blocking_fields,
@@ -598,6 +935,7 @@ async def get_channel_state(channel: str):
         "escalated": case.escalated,
         "taken_over": case.taken_over,
         "transcript": _safe_transcript(case),
+        "barge_in": getattr(case, 'barge_in_active', False),
     }
 
 
@@ -674,7 +1012,9 @@ async def vad_websocket(websocket: WebSocket):
 # ── /asr — Faster Whisper speech-to-text ─────────────────────────────
 
 @app.post("/asr")
+@_rate_limit("20/minute")
 async def transcribe(
+    request: Request,
     audio: UploadFile = File(...),
     language: Optional[str] = Form(default=None),
 ):
@@ -731,6 +1071,216 @@ async def reset_session(channel: str):
         print(f"[PRISM] 🔄 Session reset for channel: {channel}")
         return {"status": "reset", "channel": channel, "old_case_id": old_case_id}
     return {"status": "no_case", "channel": channel}
+
+
+@app.post("/session/recover/{channel}")
+async def recover_session(channel: str):
+    """Reset a channel to safe LISTENING state after an error."""
+    from context import cases
+    from prism_state import PrismState
+
+    if channel not in cases:
+        return {"status": "no_case", "channel": channel}
+
+    case = cases[channel]
+    case.failed = False
+    case.tool_failed = False
+    case.verifying = False
+    case.barge_in_active = False
+    case.planning = False
+    case.connection_state = "CONNECTED"
+
+    logger.info(f"[PRISM] Session recovered for channel: {channel}")
+    return {"status": "recovered", "channel": channel, "voice_state": PrismState.LISTENING.value}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 2: MEMORY ENDPOINTS — consent + management
+# ═══════════════════════════════════════════════════════════════════════════
+
+class MemoryConsentRequest(BaseModel):
+    consent: bool
+
+
+@app.post("/memory/consent/{channel}")
+async def set_memory_consent(channel: str, req: MemoryConsentRequest):
+    """
+    Set user consent for long-term memory storage.
+    By default consent=False — long-term memory is never stored without explicit opt-in.
+    """
+    from context import get_or_create_case
+    from memory_manager import get_memory_manager
+
+    case = get_or_create_case(channel)
+    case.memory_consent = req.consent
+    mm = get_memory_manager()
+
+    # If consent was revoked, delete ALL long-term memories for this channel
+    if not req.consent:
+        deleted = mm.forget_all_long_term(case)
+        logger.info(f"[Memory] Consent revoked — deleted {deleted} long-term memories for {channel}")
+
+    logger.info(f"[Memory] Consent set to {req.consent} for channel: {channel}")
+    return {
+        "channel": channel,
+        "consent": req.consent,
+        "long_term_keys": mm.list_long_term_keys(case),
+    }
+
+
+@app.get("/memory/{channel}")
+async def get_memory_status(channel: str):
+    """
+    Privacy-safe memory status endpoint.
+    Returns only keys (not values) and consent status.
+    """
+    from context import cases
+    from memory_manager import get_memory_manager
+
+    if channel not in cases:
+        return {
+            "channel": channel,
+            "consent": False,
+            "short_term_keys": [],
+            "long_term_keys": [],
+        }
+
+    case = cases[channel]
+    mm = get_memory_manager()
+    return {
+        "channel": channel,
+        "consent": case.memory_consent,
+        "short_term_keys": list(case.short_term_memory.keys()),
+        "long_term_keys": mm.list_long_term_keys(case),
+    }
+
+
+@app.delete("/memory/{channel}")
+async def delete_memory(channel: str):
+    """
+    Delete ALL memory for a channel.
+    Clears short-term memory and all persisted long-term memories.
+    """
+    from context import cases
+    from memory_manager import get_memory_manager
+
+    mm = get_memory_manager()
+    result = {
+        "channel": channel,
+        "short_term_cleared": False,
+        "long_term_deleted": 0,
+    }
+
+    if channel in cases:
+        case = cases[channel]
+        mm.clear_short_term(case)
+        result["short_term_cleared"] = True
+        result["long_term_deleted"] = mm.forget_all_long_term(case)
+
+    logger.info(f"[Memory] Full wipe for {channel}: {result}")
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 2: KNOWLEDGE / SEARCH ENDPOINTS — RAG pipeline
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/knowledge/search")
+async def knowledge_search(
+    query: str = Query(..., min_length=2, max_length=500),
+    top_k: int = Query(default=3, ge=1, le=10),
+    user: dict = Depends(require_role(UserRole.AGENT)),
+):
+    """
+    Search the knowledge base. Requires AGENT+ role.
+
+    Returns:
+      query: the original query
+      results: [{text, source, score}] — sorted by highest score first
+      search_latency_ms: time taken
+      search_mode: "semantic" (embeddings) or "keyword" (fallback)
+    """
+    from knowledge_base import get_knowledge_base
+    import time as _time
+
+    start = _time.perf_counter()
+    kb = get_knowledge_base()
+    kb.ensure_loaded()
+    results = kb.search(query, top_k=top_k)
+    latency_ms = int((_time.perf_counter() - start) * 1000)
+
+    status = kb.status()
+    mode = "semantic" if status["embeddings_available"] else "keyword"
+
+    return {
+        "query": query,
+        "search_mode": mode,
+        "search_latency_ms": latency_ms,
+        "top_k": len(results),
+        "results": [
+            {"text": text, "source": source, "score": round(float(score), 4)}
+            for text, score, source in results
+        ],
+    }
+
+
+@app.get("/knowledge/status")
+async def knowledge_status(user: dict = Depends(require_role(UserRole.AGENT))):
+    """
+    Return the knowledge base status: chunk counts, sources, embedding availability.
+    """
+    from knowledge_base import get_knowledge_base
+    kb = get_knowledge_base()
+    kb.ensure_loaded()
+    return kb.status()
+
+
+@app.post("/admin/knowledge/upload")
+async def knowledge_upload(
+    source_name: str = Form(..., min_length=2, max_length=120),
+    reindex: bool = Form(default=False),
+    document: UploadFile = File(...),
+    user: dict = Depends(require_role(UserRole.ADMIN)),
+):
+    """
+    Admin-only: upload and ingest a document into the knowledge base.
+    Supports .txt and .md files; text is extracted, chunked, embedded, and stored.
+
+    - source_name: logical name for the source (e.g. "refund_policy_v2")
+    - reindex: if True, remove existing chunks for source_name before ingesting
+    - document: the file upload
+    """
+    from knowledge_base import get_knowledge_base
+
+    kb = get_knowledge_base()
+    try:
+        raw_bytes = await document.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read upload: {sanitize_error(e)}")
+
+    # Decode as UTF-8 (tolerant)
+    try:
+        text = raw_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=400, detail="File encoding not supported")
+
+    if len(text.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Document is too short (min 50 chars)")
+
+    try:
+        chunks = kb.ingest_document(source_name, text, reindex=reindex)
+    except Exception as e:
+        logger.error(f"[Knowledge] Upload failed for {source_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {sanitize_error(e)}")
+
+    status = kb.status()
+    logger.info(f"[Knowledge] Admin upload by {user.get('username')}: {source_name} -> {chunks} chunks")
+    return {
+        "source": source_name,
+        "chunks_indexed": chunks,
+        "reindexed": reindex,
+        "kb_status": status,
+    }
 
 
 if __name__ == "__main__":

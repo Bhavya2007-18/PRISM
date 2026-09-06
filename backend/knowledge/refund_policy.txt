@@ -1,0 +1,58 @@
+PRISM Refund Policy
+===================
+
+Effective Date: 2026-01-01
+
+1. ELIGIBILITY FOR REFUND
+-------------------------
+A customer is eligible for a full refund under the following conditions:
+  - The payment was successful but the order was NOT confirmed within 24 hours.
+  - The same amount was charged twice for a single order (duplicate charge).
+  - The order was cancelled within 24 hours of placement and before dispatch.
+  - The delivered goods/services are materially different from the description.
+
+A customer is eligible for a partial refund (50%) under these conditions:
+  - The order was cancelled more than 24 hours after placement but before dispatch.
+  - A service was partially rendered before cancellation.
+
+A customer is NOT eligible for refund when:
+  - The order has been successfully delivered and accepted.
+  - The payment was marked FAILED at the gateway (no actual debit occurred).
+  - More than 30 calendar days have passed since the date of payment.
+
+2. REFUND PROCESSING TIMELINE
+-----------------------------
+Stage                       | Typical Duration
+----------------------------|------------------
+Refund request approved     | Immediate by agent or within 24h by specialist
+Payment processor reversal  | 2 to 48 hours (depends on payment method)
+Credit to customer account  | 5 to 7 working days for cards; 1 to 3 days for UPI
+
+Note: Saturdays, Sundays, and bank holidays are not counted as working days.
+
+3. HOW TO INITIATE A REFUND
+---------------------------
+1. Share your Transaction ID (TX-number) with PRISM.
+2. PRISM will verify the transaction status.
+3. If the case is straightforward (e.g. duplicate charge, payment success + order not confirmed), PRISM may propose a refund.
+4. For cases requiring human judgement, PRISM automatically escalates to a specialist who reviews and approves/rejects within 24 hours.
+5. Once approved, the refund is initiated automatically to the original payment method.
+
+4. REFUND FAILURES
+------------------
+Occasionally a refund can fail:
+  - If the original bank account / card has been closed.
+  - If the payment method is no longer active.
+  - If there is a technical error at the payment processor.
+
+In such cases, a human specialist will contact the customer within 48 hours to arrange an alternative refund method (typically bank transfer or wallet credit).
+
+5. REFUND STATUS TRACKING
+-------------------------
+Customers can ask PRISM "what is my refund status?" at any time. PRISM will return:
+  - REFUND_INITIATED — request approved, sent to processor
+  - REFUND_PROCESSING — payment processor is reversing the charge
+  - REFUND_COMPLETED — amount successfully credited back
+  - REFUND_FAILED — reversal failed, specialist will contact you
+
+If the refund status is REFUND_FAILED for more than 48 hours, the case is automatically escalated.
